@@ -1,0 +1,21 @@
+# Claude Code
+.claude/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Original assets (large files)
+*_cropped.png
+*_original.png
+
+# Packed extension
+*.zip
+*.crx
+*.pem
