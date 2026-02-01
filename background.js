@@ -6,8 +6,17 @@ const tabData = new Map();
 // グローバルな除外ドメインリスト（全タブ共通）
 let ignoredDomains = new Set();
 
+// 許可ドメインリスト（厳格モード用）
+let allowedDomains = new Set();
+
 // 動的ルールのIDカウンター（Service Worker再起動対策）
 let ruleIdCounter = 1000;
+
+// 厳格モードのブロックルールID（固定）
+const STRICT_MODE_BLOCK_RULE_ID = 1;
+
+// 現在のモード（'normal' or 'strict'）
+let currentMode = 'normal';
 
 // 初期化完了フラグ
 let initialized = false;
@@ -21,14 +30,20 @@ async function initialize() {
     const rules = await chrome.declarativeNetRequest.getDynamicRules();
     if (rules.length > 0) {
       const maxId = Math.max(...rules.map(r => r.id));
-      ruleIdCounter = maxId + 1;
+      ruleIdCounter = Math.max(ruleIdCounter, maxId + 1);
     }
     console.log(`Initialized with ${rules.length} existing rules, next ruleId: ${ruleIdCounter}`);
 
-    // 除外ドメインを読み込み
-    const result = await chrome.storage.local.get('ignoredDomains');
+    // ストレージから設定を読み込み
+    const result = await chrome.storage.local.get(['ignoredDomains', 'allowedDomains', 'currentMode']);
     if (result.ignoredDomains) {
       ignoredDomains = new Set(result.ignoredDomains);
+    }
+    if (result.allowedDomains) {
+      allowedDomains = new Set(result.allowedDomains);
+    }
+    if (result.currentMode) {
+      currentMode = result.currentMode;
     }
 
     initialized = true;
@@ -42,6 +57,115 @@ async function saveIgnoredDomains() {
   await chrome.storage.local.set({
     ignoredDomains: Array.from(ignoredDomains)
   });
+}
+
+// 許可ドメインをストレージに保存
+async function saveAllowedDomains() {
+  await chrome.storage.local.set({
+    allowedDomains: Array.from(allowedDomains)
+  });
+}
+
+// モードをストレージに保存
+async function saveCurrentMode() {
+  await chrome.storage.local.set({ currentMode });
+}
+
+// 厳格モードを有効化
+async function enableStrictMode(mainDomain) {
+  currentMode = 'strict';
+  await saveCurrentMode();
+
+  // メインドメインを自動的に許可リストに追加
+  if (mainDomain) {
+    allowedDomains.add(mainDomain);
+    await saveAllowedDomains();
+  }
+
+  // すべてのサードパーティをブロックするルールを追加
+  try {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: [STRICT_MODE_BLOCK_RULE_ID],
+      addRules: [{
+        id: STRICT_MODE_BLOCK_RULE_ID,
+        priority: 1,
+        action: { type: 'block' },
+        condition: {
+          resourceTypes: [
+            'main_frame', 'sub_frame', 'stylesheet', 'script',
+            'image', 'font', 'object', 'xmlhttprequest', 'ping',
+            'media', 'websocket', 'other'
+          ],
+          excludedRequestDomains: Array.from(allowedDomains)
+        }
+      }]
+    });
+    console.log('Strict mode enabled');
+  } catch (error) {
+    console.error('Failed to enable strict mode:', error);
+  }
+}
+
+// 厳格モードを無効化
+async function disableStrictMode() {
+  currentMode = 'normal';
+  await saveCurrentMode();
+
+  // 厳格モードのブロックルールを削除
+  try {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: [STRICT_MODE_BLOCK_RULE_ID]
+    });
+    console.log('Strict mode disabled');
+  } catch (error) {
+    console.error('Failed to disable strict mode:', error);
+  }
+}
+
+// 厳格モードでドメインを許可
+async function allowDomain(domain) {
+  allowedDomains.add(domain);
+  await saveAllowedDomains();
+
+  // ルールを更新
+  if (currentMode === 'strict') {
+    await updateStrictModeRule();
+  }
+}
+
+// 厳格モードでドメインの許可を取り消し
+async function disallowDomain(domain) {
+  allowedDomains.delete(domain);
+  await saveAllowedDomains();
+
+  // ルールを更新
+  if (currentMode === 'strict') {
+    await updateStrictModeRule();
+  }
+}
+
+// 厳格モードのルールを更新
+async function updateStrictModeRule() {
+  try {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: [STRICT_MODE_BLOCK_RULE_ID],
+      addRules: [{
+        id: STRICT_MODE_BLOCK_RULE_ID,
+        priority: 1,
+        action: { type: 'block' },
+        condition: {
+          resourceTypes: [
+            'main_frame', 'sub_frame', 'stylesheet', 'script',
+            'image', 'font', 'object', 'xmlhttprequest', 'ping',
+            'media', 'websocket', 'other'
+          ],
+          excludedRequestDomains: Array.from(allowedDomains)
+        }
+      }]
+    });
+  } catch (error) {
+    console.error('Failed to update strict mode rule:', error);
+  }
 }
 
 // 初期化を実行
@@ -124,7 +248,9 @@ chrome.webRequest.onBeforeRequest.addListener(
           domain_counts: data.domain_counts,
           main_domain: data.main_domain,
           blocked_domains: blockedDomains,
-          ignored_domains: Array.from(ignoredDomains)
+          ignored_domains: Array.from(ignoredDomains),
+          mode: currentMode,
+          allowed_domains: Array.from(allowedDomains)
         }
       }).catch(() => {
         // サイドパネルが開いていない場合は無視
@@ -253,7 +379,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         domain_counts: data?.domain_counts || {},
         main_domain: data?.main_domain || null,
         blocked_domains: blockedDomains,
-        ignored_domains: Array.from(ignoredDomains)
+        ignored_domains: Array.from(ignoredDomains),
+        mode: currentMode,
+        allowed_domains: Array.from(allowedDomains)
       });
     })();
     return true;
@@ -367,6 +495,74 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await unignoreDomain(domain);
       }
       sendResponse({ success: true, ignored_domains: Array.from(ignoredDomains) });
+    })();
+    return true;
+  }
+
+  // モード取得
+  if (message.type === 'GET_MODE') {
+    (async () => {
+      await initialize();
+      sendResponse({
+        mode: currentMode,
+        allowed_domains: Array.from(allowedDomains)
+      });
+    })();
+    return true;
+  }
+
+  // モード設定
+  if (message.type === 'SET_MODE') {
+    const { mode, mainDomain } = message;
+    (async () => {
+      await initialize();
+      if (mode === 'strict') {
+        await enableStrictMode(mainDomain);
+      } else {
+        await disableStrictMode();
+      }
+      sendResponse({
+        success: true,
+        mode: currentMode,
+        allowed_domains: Array.from(allowedDomains)
+      });
+    })();
+    return true;
+  }
+
+  // ドメイン許可（厳格モード用）
+  if (message.type === 'ALLOW_DOMAIN') {
+    const { domain } = message;
+    (async () => {
+      await initialize();
+      await allowDomain(domain);
+      sendResponse({
+        success: true,
+        allowed_domains: Array.from(allowedDomains)
+      });
+    })();
+    return true;
+  }
+
+  // ドメイン許可解除（厳格モード用）
+  if (message.type === 'DISALLOW_DOMAIN') {
+    const { domain } = message;
+    (async () => {
+      await initialize();
+      await disallowDomain(domain);
+      sendResponse({
+        success: true,
+        allowed_domains: Array.from(allowedDomains)
+      });
+    })();
+    return true;
+  }
+
+  // 許可ドメイン一覧取得
+  if (message.type === 'GET_ALLOWED_DOMAINS') {
+    (async () => {
+      await initialize();
+      sendResponse({ allowed_domains: Array.from(allowedDomains) });
     })();
     return true;
   }

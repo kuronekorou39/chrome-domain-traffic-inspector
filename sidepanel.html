@@ -23,6 +23,20 @@
       </div>
     </header>
 
+    <div class="mode-switcher">
+      <div class="mode-toggle-container">
+        <span class="mode-label" id="normalModeLabel">通常</span>
+        <label class="mode-toggle">
+          <input type="checkbox" id="modeToggle">
+          <span class="mode-slider"></span>
+        </label>
+        <span class="mode-label" id="strictModeLabel">厳格</span>
+      </div>
+      <div class="mode-description" id="modeDescription">
+        ブラックリスト方式：選択したドメインをブロック
+      </div>
+    </div>
+
     <div class="stats-bar">
       <div class="stat">
         <span class="stat-value" id="totalDomains">0</span>
@@ -45,6 +59,7 @@
     <div class="tabs">
       <button class="tab-btn active" data-tab="traffic">トラフィック</button>
       <button class="tab-btn" data-tab="blocked">ブロック中</button>
+      <button class="tab-btn" data-tab="allowed" id="allowedTab" style="display: none;">許可中</button>
       <button class="tab-btn" data-tab="ignored">スルー中</button>
     </div>
 
@@ -153,6 +168,31 @@
               </svg>
               <p>スルー中のドメインはありません</p>
               <span class="empty-hint">ドメインの目アイコンをクリックするとスルーできます</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="allowedPanel">
+        <div class="bulk-unblock-bar" id="bulkDisallowBar">
+          <span class="bulk-info"><span id="allowedListCount">0</span>件許可中</span>
+          <button id="bulkDisallowBtn" class="bulk-btn bulk-disallow" title="すべて許可解除">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+            </svg>
+            すべて解除
+          </button>
+        </div>
+        <div class="domain-list-container">
+          <div class="domain-list" id="allowedList">
+            <div class="empty-state" id="allowedEmptyState">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/>
+                <path d="M9 12l2 2 4-4"/>
+              </svg>
+              <p>許可中のドメインはありません</p>
+              <span class="empty-hint">厳格モードでドメインのチェックアイコンをクリックすると許可できます</span>
             </div>
           </div>
         </div>

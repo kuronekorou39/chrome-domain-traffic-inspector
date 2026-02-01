@@ -723,3 +723,170 @@ body {
   50% { transform: scale(1.2); background: var(--accent); color: white; }
   100% { transform: scale(1); }
 }
+
+/* Mode Switcher */
+.mode-switcher {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.mode-toggle-container {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mode-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  transition: color var(--transition);
+}
+
+.mode-label.active {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.mode-toggle {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+}
+
+.mode-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.mode-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  transition: all var(--transition);
+}
+
+.mode-slider::before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 2px;
+  bottom: 2px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: all var(--transition);
+}
+
+.mode-toggle input:checked + .mode-slider {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.mode-toggle input:checked + .mode-slider::before {
+  transform: translateX(20px);
+  background: white;
+}
+
+.mode-description {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* Strict mode styling */
+.container.strict-mode {
+  --accent: #ef4444;
+  --accent-hover: #dc2626;
+}
+
+.container.strict-mode .status-dot {
+  background: var(--danger);
+}
+
+.container.strict-mode .mode-description {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+/* Allow Button (for strict mode) */
+.allow-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+
+.allow-btn:hover {
+  background: var(--success);
+  color: white;
+}
+
+.allow-btn.active {
+  background: var(--success);
+  color: white;
+}
+
+.allow-btn.active:hover {
+  background: var(--danger);
+}
+
+.allow-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Allowed domain item */
+.domain-item.allowed {
+  background: rgba(34, 197, 94, 0.08);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.domain-item.allowed .domain-name {
+  color: var(--success);
+}
+
+/* Main domain tag */
+.tag-main {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent);
+}
+
+/* Disallow button styling */
+.disallow-btn {
+  background: var(--danger) !important;
+}
+
+.disallow-btn:hover {
+  background: var(--danger-hover) !important;
+}
+
+/* Bulk disallow button */
+.bulk-disallow {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+}
+
+.bulk-disallow:hover:not(:disabled) {
+  background: var(--danger);
+  color: white;
+}
