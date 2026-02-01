@@ -65,10 +65,21 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  padding: 10px 16px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .title {
@@ -84,6 +95,93 @@ body {
   width: 20px;
   height: 20px;
   color: var(--accent);
+}
+
+/* Blocking Toggle */
+.blocking-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.blocking-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--success);
+  min-width: 24px;
+  text-align: center;
+}
+
+.blocking-label.off {
+  color: var(--text-muted);
+}
+
+.power-toggle {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+}
+
+.power-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.power-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: var(--text-muted);
+  border-radius: 10px;
+  transition: all var(--transition);
+}
+
+.power-slider::before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 2px;
+  bottom: 2px;
+  background: white;
+  border-radius: 50%;
+  transition: all var(--transition);
+}
+
+.power-toggle input:checked + .power-slider {
+  background: var(--success);
+}
+
+.power-toggle input:checked + .power-slider::before {
+  transform: translateX(16px);
+}
+
+/* When blocking is disabled, dim the container */
+.container.blocking-disabled {
+  --accent: var(--text-muted);
+}
+
+.container.blocking-disabled .mode-switcher {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.container.blocking-disabled .mode-description {
+  color: var(--text-muted) !important;
+}
+
+.container.blocking-disabled .bulk-block,
+.container.blocking-disabled .bulk-unblock,
+.container.blocking-disabled .block-btn,
+.container.blocking-disabled .allow-btn {
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 .status {
@@ -245,6 +343,29 @@ body {
   color: white;
 }
 
+.tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 9px;
+}
+
+.tab-btn.active .tab-count {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.tab-count:empty,
+.tab-count[data-count="0"] {
+  display: none;
+}
+
 .tab-panels {
   flex: 1;
   display: flex;
@@ -263,12 +384,74 @@ body {
   display: flex;
 }
 
+/* Filter & Sort Row */
+.filter-sort-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+/* Filter Controls */
+.filter-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.filter-btn {
+  padding: 4px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.filter-btn:hover {
+  background: var(--bg-tertiary);
+}
+
+.filter-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.filter-btn[data-filter="passing"].active {
+  background: var(--success);
+  border-color: var(--success);
+}
+
+.filter-btn[data-filter="blocked"].active {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.filter-btn[data-filter="ad"].active {
+  background: var(--warning);
+  border-color: var(--warning);
+}
+
+.filter-btn[data-filter="3p"].active {
+  background: #8b5cf6;
+  border-color: #8b5cf6;
+}
+
 /* Sort Controls */
 .sort-controls {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 16px 12px;
+  gap: 6px;
   flex-shrink: 0;
 }
 
@@ -304,8 +487,8 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 16px;
-  margin: 0 16px 12px;
+  padding: 8px 12px;
+  margin: 0 16px 8px;
   background: var(--bg-tertiary);
   border-radius: var(--radius-md);
   flex-shrink: 0;
@@ -390,6 +573,16 @@ body {
   color: white;
 }
 
+.bulk-consolidate {
+  background: rgba(139, 92, 246, 0.15);
+  color: #8b5cf6;
+}
+
+.bulk-consolidate:hover:not(:disabled) {
+  background: #8b5cf6;
+  color: white;
+}
+
 /* Bulk Unblock Bar (in panels) */
 .bulk-unblock-bar {
   display: flex;
@@ -397,7 +590,7 @@ body {
   justify-content: space-between;
   gap: 8px;
   padding: 8px 12px;
-  margin: 0 16px 12px;
+  margin: 8px 16px;
   background: var(--bg-tertiary);
   border-radius: var(--radius-md);
   flex-shrink: 0;
@@ -459,6 +652,12 @@ body {
 .domain-item.blocked .domain-name {
   text-decoration: line-through;
   color: var(--text-muted);
+}
+
+.domain-item.explicitly-blocked {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: var(--danger);
+  border-left: 3px solid var(--danger);
 }
 
 .domain-item.likely-ad {
@@ -550,6 +749,11 @@ body {
   color: #8b5cf6;
 }
 
+.tag-blocked {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+}
+
 /* Type Badges */
 .type-badges {
   display: flex;
@@ -632,6 +836,32 @@ body {
   flex-shrink: 0;
 }
 
+/* Edit Button */
+.edit-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+
+.edit-btn:hover {
+  background: var(--accent);
+  color: white;
+}
+
+.edit-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* Restore Button (for ignored domains) */
 .restore-btn {
   display: flex;
@@ -709,7 +939,8 @@ body {
   }
 }
 
-.domain-item {
+/* 新規追加時のみアニメーション（data-new属性がある場合） */
+.domain-item[data-new] {
   animation: fadeIn 200ms ease;
 }
 
