@@ -1,10 +1,38 @@
 // Domain Traffic Inspector - Side Panel Logic
 
+// 広告・トラッキング判定用キーワード
+const AD_KEYWORDS = [
+  'ad', 'ads', 'adserver', 'adservice', 'adsystem',
+  'track', 'tracker', 'tracking',
+  'analytics', 'stats', 'metrics', 'telemetry',
+  'beacon', 'pixel', 'pxl',
+  'bid', 'bidder', 'rtb', 'ssp', 'dsp',
+  'sync', 'match', 'cookie',
+  'doubleclick', 'googlesyndication', 'googleadservices',
+  'facebook.*pixel', 'fbevents',
+  'criteo', 'pubmatic', 'rubiconproject', 'openx',
+  'taboola', 'outbrain', 'mgid',
+  'amazon-adsystem', 'moatads',
+  'scorecardresearch', 'quantserve', 'omtrdc',
+  'adnxs', 'adsrvr', 'adform', 'adroll',
+  'mopub', 'inmobi', 'appsflyer', 'adjust', 'branch',
+  'microad', 'i-mobile', 'imobile', 'fam-8', 'bance'
+];
+
+// 安全なドメイン判定用キーワード
+const SAFE_KEYWORDS = [
+  'fonts.googleapis', 'fonts.gstatic',
+  'ajax.googleapis', 'cdn.jsdelivr', 'cdnjs.cloudflare',
+  'unpkg.com', 'stackpath',
+  'jquery', 'bootstrap', 'fontawesome'
+];
+
 class DomainTrafficInspector {
   constructor() {
     this.currentTabId = null;
     this.domainData = {
       domain_counts: {},
+      main_domain: null,
       blocked_domains: [],
       ignored_domains: []
     };
@@ -13,6 +41,34 @@ class DomainTrafficInspector {
     this.activeTab = 'traffic';
 
     this.init();
+  }
+
+  // ドメインが広告/トラッキングの可能性があるか判定
+  isLikelyAd(domain) {
+    const lowerDomain = domain.toLowerCase();
+    return AD_KEYWORDS.some(keyword => lowerDomain.includes(keyword));
+  }
+
+  // ドメインが安全（CDN等）か判定
+  isLikelySafe(domain) {
+    const lowerDomain = domain.toLowerCase();
+    return SAFE_KEYWORDS.some(keyword => lowerDomain.includes(keyword));
+  }
+
+  // サードパーティか判定
+  isThirdParty(domain) {
+    if (!this.domainData.main_domain) return false;
+    // メインドメインと一致、またはサブドメインならファーストパーティ
+    const mainDomain = this.domainData.main_domain;
+    if (domain === mainDomain) return false;
+    // サブドメインチェック（例：www.example.com と example.com）
+    if (domain.endsWith('.' + mainDomain) || mainDomain.endsWith('.' + domain)) return false;
+    // ルートドメイン比較（例：sub.example.com と example.com）
+    const getDomainRoot = (d) => {
+      const parts = d.split('.');
+      return parts.length >= 2 ? parts.slice(-2).join('.') : d;
+    };
+    return getDomainRoot(domain) !== getDomainRoot(mainDomain);
   }
 
   async init() {
@@ -269,9 +325,13 @@ class DomainTrafficInspector {
       );
     }
 
-    // ソート
+    // ソート（新しいデータ構造に対応）
     if (this.sortBy === 'count') {
-      domains.sort((a, b) => b[1] - a[1]);
+      domains.sort((a, b) => {
+        const countA = typeof a[1] === 'object' ? a[1].total : a[1];
+        const countB = typeof b[1] === 'object' ? b[1].total : b[1];
+        return countB - countA;
+      });
     } else {
       domains.sort((a, b) => a[0].localeCompare(b[0]));
     }
@@ -339,7 +399,10 @@ class DomainTrafficInspector {
 
   updateStats() {
     const totalDomains = Object.keys(this.domainData.domain_counts).length;
-    const totalRequests = Object.values(this.domainData.domain_counts).reduce((a, b) => a + b, 0);
+    const totalRequests = Object.values(this.domainData.domain_counts).reduce((acc, data) => {
+      const count = typeof data === 'object' ? data.total : data;
+      return acc + count;
+    }, 0);
     const blockedCount = this.domainData.blocked_domains.length;
     const ignoredCount = this.domainData.ignored_domains.length;
 
@@ -347,6 +410,31 @@ class DomainTrafficInspector {
     document.getElementById('totalRequests').textContent = totalRequests;
     document.getElementById('blockedCount').textContent = blockedCount;
     document.getElementById('ignoredCount').textContent = ignoredCount;
+  }
+
+  // リソースタイプのバッジを生成
+  renderTypeBadges(types) {
+    if (!types || Object.keys(types).length === 0) return '';
+
+    const typeOrder = ['JS', 'XHR', 'IMG', 'CSS', 'FONT', 'FRAME', 'MEDIA', 'DOC', 'PING', 'WS', 'OTHER'];
+    const typeColors = {
+      'JS': '#f59e0b',    // オレンジ（スクリプト = 注意）
+      'XHR': '#ef4444',   // 赤（通信 = 注意）
+      'IMG': '#22c55e',   // 緑
+      'CSS': '#3b82f6',   // 青
+      'FONT': '#8b5cf6',  // 紫
+      'FRAME': '#ec4899', // ピンク
+      'MEDIA': '#06b6d4', // シアン
+      'DOC': '#6b7280',   // グレー
+      'PING': '#ef4444',  // 赤（トラッキング）
+      'WS': '#f59e0b',    // オレンジ
+      'OTHER': '#6b7280'  // グレー
+    };
+
+    return typeOrder
+      .filter(type => types[type])
+      .map(type => `<span class="type-badge" style="background: ${typeColors[type]}20; color: ${typeColors[type]}">${type}:${types[type]}</span>`)
+      .join('');
   }
 
   renderTrafficList(oldCounts = {}) {
@@ -367,22 +455,43 @@ class DomainTrafficInspector {
     // ドメインリストを構築
     const fragment = document.createDocumentFragment();
 
-    sortedDomains.forEach(([domain, count]) => {
+    sortedDomains.forEach(([domain, data]) => {
       const isBlocked = this.domainData.blocked_domains.includes(domain);
-      const wasUpdated = oldCounts[domain] !== undefined && oldCounts[domain] !== count;
+      const isAd = this.isLikelyAd(domain);
+      const isSafe = this.isLikelySafe(domain);
+      const isThirdParty = this.isThirdParty(domain);
+
+      // 新旧データ構造に対応
+      const count = typeof data === 'object' ? data.total : data;
+      const types = typeof data === 'object' ? data.types : null;
+      const oldCount = oldCounts[domain] ? (typeof oldCounts[domain] === 'object' ? oldCounts[domain].total : oldCounts[domain]) : undefined;
+      const wasUpdated = oldCount !== undefined && oldCount !== count;
+
+      // タグを構築
+      let tags = '';
+      if (isAd) {
+        tags += '<span class="domain-tag tag-ad" title="広告/トラッキングの可能性">広告</span>';
+      }
+      if (isSafe) {
+        tags += '<span class="domain-tag tag-safe" title="CDN/ライブラリ">安全</span>';
+      }
+      if (isThirdParty) {
+        tags += '<span class="domain-tag tag-3p" title="サードパーティ">3rd</span>';
+      }
 
       const item = document.createElement('div');
-      item.className = `domain-item${isBlocked ? ' blocked' : ''}`;
+      item.className = `domain-item${isBlocked ? ' blocked' : ''}${isAd ? ' likely-ad' : ''}`;
       item.innerHTML = `
         <div class="domain-info">
-          <div class="domain-name" title="${domain}">${domain}</div>
+          <div class="domain-header">
+            <div class="domain-name" title="${domain}">${domain}</div>
+            <div class="domain-tags">${tags}</div>
+          </div>
           <div class="domain-meta">
             <span class="request-count">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
-              </svg>
               <span class="count-badge${wasUpdated ? ' updated' : ''}">${count}</span>
             </span>
+            <div class="type-badges">${this.renderTypeBadges(types)}</div>
           </div>
         </div>
         <div class="domain-actions">

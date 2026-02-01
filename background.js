@@ -62,16 +62,35 @@ function initTabData(tabId) {
   if (!tabData.has(tabId)) {
     tabData.set(tabId, {
       domain_counts: {},
+      main_domain: null,
       blocked_domains: new Set()
     });
   }
   return tabData.get(tabId);
 }
 
+// リソースタイプを短縮形に変換
+function getShortType(type) {
+  const typeMap = {
+    'script': 'JS',
+    'stylesheet': 'CSS',
+    'image': 'IMG',
+    'xmlhttprequest': 'XHR',
+    'font': 'FONT',
+    'media': 'MEDIA',
+    'sub_frame': 'FRAME',
+    'main_frame': 'DOC',
+    'ping': 'PING',
+    'websocket': 'WS',
+    'other': 'OTHER'
+  };
+  return typeMap[type] || 'OTHER';
+}
+
 // リクエスト監視
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
-    const { tabId, url } = details;
+    const { tabId, url, type } = details;
     if (tabId < 0) return; // バックグラウンドリクエストは除外
 
     const domain = extractDomain(url);
@@ -81,7 +100,19 @@ chrome.webRequest.onBeforeRequest.addListener(
     if (ignoredDomains.has(domain)) return;
 
     const data = initTabData(tabId);
-    data.domain_counts[domain] = (data.domain_counts[domain] || 0) + 1;
+    const shortType = getShortType(type);
+
+    // ドメインデータを初期化または更新
+    if (!data.domain_counts[domain]) {
+      data.domain_counts[domain] = {
+        total: 0,
+        types: {}
+      };
+    }
+
+    data.domain_counts[domain].total += 1;
+    data.domain_counts[domain].types[shortType] =
+      (data.domain_counts[domain].types[shortType] || 0) + 1;
 
     // サイドパネルに更新を通知（非同期でブロックドメインを取得）
     (async () => {
@@ -91,6 +122,7 @@ chrome.webRequest.onBeforeRequest.addListener(
         tabId,
         data: {
           domain_counts: data.domain_counts,
+          main_domain: data.main_domain,
           blocked_domains: blockedDomains,
           ignored_domains: Array.from(ignoredDomains)
         }
@@ -107,11 +139,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   tabData.delete(tabId);
 });
 
-// タブがナビゲートしたらカウントをリセット
+// タブがナビゲートしたらカウントをリセット＆メインドメインを記録
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading' && changeInfo.url) {
     const data = initTabData(tabId);
     data.domain_counts = {};
+    data.main_domain = extractDomain(changeInfo.url);
     // ブロックリストは維持
   }
 });
@@ -218,6 +251,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const blockedDomains = await getBlockedDomains();
       sendResponse({
         domain_counts: data?.domain_counts || {},
+        main_domain: data?.main_domain || null,
         blocked_domains: blockedDomains,
         ignored_domains: Array.from(ignoredDomains)
       });

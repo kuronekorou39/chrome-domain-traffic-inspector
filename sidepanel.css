@@ -461,9 +461,20 @@ body {
   color: var(--text-muted);
 }
 
+.domain-item.likely-ad {
+  border-left: 3px solid var(--warning);
+}
+
 .domain-info {
   flex: 1;
   min-width: 0;
+}
+
+.domain-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
 }
 
 .domain-name {
@@ -499,13 +510,59 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 20px;
-  padding: 2px 6px;
-  font-size: 10px;
+  min-width: 24px;
+  padding: 2px 8px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--accent);
   background: rgba(59, 130, 246, 0.1);
   border-radius: 10px;
+}
+
+/* Domain Tags */
+.domain-tags {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.domain-tag {
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 600;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.tag-ad {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+}
+
+.tag-safe {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--success);
+}
+
+.tag-3p {
+  background: rgba(139, 92, 246, 0.15);
+  color: #8b5cf6;
+}
+
+/* Type Badges */
+.type-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.type-badge {
+  padding: 1px 4px;
+  font-size: 9px;
+  font-weight: 600;
+  border-radius: 3px;
+  font-family: 'Monaco', 'Menlo', monospace;
 }
 
 .block-btn {
