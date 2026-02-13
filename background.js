@@ -3,11 +3,11 @@
 // タブごとのデータを管理
 const tabData = new Map();
 
-// グローバルな除外ドメインリスト（全タブ共通）
-let ignoredDomains = new Set();
-
 // 許可ドメインリスト（厳格モード用）
 let allowedDomains = new Set();
+
+// ドメインルール（メタデータ層）
+let domainRules = {};
 
 // 動的ルールのIDカウンター（Service Worker再起動対策）
 let ruleIdCounter = 1000;
@@ -24,6 +24,17 @@ let blockingEnabled = true;
 // 初期化完了フラグ
 let initialized = false;
 
+// domainRulesをストレージから読み込み
+async function loadDomainRules() {
+  const result = await chrome.storage.local.get(['domainRules']);
+  domainRules = result.domainRules || {};
+}
+
+// domainRulesをストレージに保存
+async function saveDomainRules() {
+  await chrome.storage.local.set({ domainRules });
+}
+
 // 初期化時に既存のルールを確認し、ルールIDカウンターを設定
 async function initialize() {
   if (initialized) return;
@@ -38,10 +49,7 @@ async function initialize() {
     console.log(`Initialized with ${rules.length} existing rules, next ruleId: ${ruleIdCounter}`);
 
     // ストレージから設定を読み込み
-    const result = await chrome.storage.local.get(['ignoredDomains', 'allowedDomains', 'currentMode', 'blockingEnabled']);
-    if (result.ignoredDomains) {
-      ignoredDomains = new Set(result.ignoredDomains);
-    }
+    const result = await chrome.storage.local.get(['allowedDomains', 'currentMode', 'blockingEnabled']);
     if (result.allowedDomains) {
       allowedDomains = new Set(result.allowedDomains);
     }
@@ -50,6 +58,16 @@ async function initialize() {
     }
     if (result.blockingEnabled !== undefined) {
       blockingEnabled = result.blockingEnabled;
+    }
+
+    // domainRulesを読み込み
+    await loadDomainRules();
+
+    // マイグレーション（初回のみ）
+    const migResult = await chrome.storage.local.get(['migrationDone']);
+    if (!migResult.migrationDone) {
+      await migrateToRules(rules);
+      await chrome.storage.local.set({ migrationDone: true });
     }
 
     // アイコンバッジを更新
@@ -61,11 +79,35 @@ async function initialize() {
   }
 }
 
-// 除外ドメインをストレージに保存
-async function saveIgnoredDomains() {
-  await chrome.storage.local.set({
-    ignoredDomains: Array.from(ignoredDomains)
-  });
+// 既存データをdomainRulesにマイグレーション
+async function migrateToRules(existingRules) {
+  let changed = false;
+
+  // declarativeNetRequestの既存ブロックルール → action: "block"
+  for (const rule of existingRules) {
+    if (rule.id === STRICT_MODE_BLOCK_RULE_ID) continue;
+    if (rule.condition.requestDomains) {
+      for (const domain of rule.condition.requestDomains) {
+        if (!domainRules[domain]) {
+          domainRules[domain] = { action: 'block', memo: '', tags: [] };
+          changed = true;
+        }
+      }
+    }
+  }
+
+  // allowedDomains → action: "allow"
+  for (const domain of allowedDomains) {
+    if (!domainRules[domain]) {
+      domainRules[domain] = { action: 'allow', memo: '', tags: [] };
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    await saveDomainRules();
+    console.log('Migration completed:', Object.keys(domainRules).length, 'rules');
+  }
 }
 
 // 許可ドメインをストレージに保存
@@ -145,6 +187,13 @@ async function enableStrictMode(mainDomain) {
   if (mainDomain) {
     allowedDomains.add(mainDomain);
     await saveAllowedDomains();
+    // domainRulesにも同期
+    if (!domainRules[mainDomain]) {
+      domainRules[mainDomain] = { action: 'allow', memo: '', tags: [] };
+    } else {
+      domainRules[mainDomain].action = 'allow';
+    }
+    await saveDomainRules();
   }
 
   // すべてのサードパーティをブロックするルールを追加
@@ -197,6 +246,14 @@ async function allowDomain(domain) {
     await unblockDomain(domain);
   }
 
+  // domainRulesに同期
+  if (!domainRules[domain]) {
+    domainRules[domain] = { action: 'allow', memo: '', tags: [] };
+  } else {
+    domainRules[domain].action = 'allow';
+  }
+  await saveDomainRules();
+
   // ルールを更新
   if (currentMode === 'strict') {
     await updateStrictModeRule();
@@ -217,6 +274,12 @@ async function isBlockedDomain(domain) {
 async function disallowDomain(domain) {
   allowedDomains.delete(domain);
   await saveAllowedDomains();
+
+  // domainRulesからも削除
+  if (domainRules[domain] && domainRules[domain].action === 'allow') {
+    delete domainRules[domain];
+    await saveDomainRules();
+  }
 
   // ルールを更新
   if (currentMode === 'strict') {
@@ -261,65 +324,6 @@ function extractDomain(url) {
   }
 }
 
-// 複合TLD（2段階のTLD）
-const COMPOUND_TLDS = [
-  'co.jp', 'or.jp', 'ne.jp', 'ac.jp', 'go.jp', 'ed.jp', 'gr.jp',
-  'co.uk', 'org.uk', 'me.uk', 'ac.uk',
-  'com.au', 'net.au', 'org.au',
-  'co.nz', 'net.nz', 'org.nz',
-  'co.kr', 'or.kr', 'ne.kr',
-  'com.br', 'net.br', 'org.br',
-  'com.cn', 'net.cn', 'org.cn'
-];
-
-// ドメインからルートドメインを抽出
-function extractRootDomain(domain) {
-  const parts = domain.split('.');
-  if (parts.length <= 2) return domain;
-
-  // 複合TLDチェック
-  const lastTwo = parts.slice(-2).join('.');
-  if (COMPOUND_TLDS.includes(lastTwo)) {
-    return parts.slice(-3).join('.');
-  }
-
-  return parts.slice(-2).join('.');
-}
-
-// ドメインリストを統合（サブドメインをルートドメインにまとめる）
-function consolidateDomains(domains) {
-  // ルートドメインでグループ化
-  const groups = new Map();
-
-  domains.forEach(domain => {
-    const root = extractRootDomain(domain);
-    if (!groups.has(root)) {
-      groups.set(root, []);
-    }
-    groups.get(root).push(domain);
-  });
-
-  // 結果を構築
-  const consolidated = [];
-  const removed = [];
-
-  groups.forEach((subdomains, root) => {
-    if (subdomains.length >= 2) {
-      // 2つ以上のサブドメインがある場合はルートドメインに統合
-      consolidated.push(root);
-      // 元のサブドメインを削除リストに追加（ルート自体は除く）
-      subdomains.forEach(d => {
-        if (d !== root) removed.push(d);
-      });
-    } else {
-      // 1つだけならそのまま
-      consolidated.push(subdomains[0]);
-    }
-  });
-
-  return { consolidated, removed };
-}
-
 // タブデータを初期化
 function initTabData(tabId) {
   if (!tabData.has(tabId)) {
@@ -359,9 +363,6 @@ chrome.webRequest.onBeforeRequest.addListener(
     const domain = extractDomain(url);
     if (!domain) return;
 
-    // 除外ドメインはカウントしない
-    if (ignoredDomains.has(domain)) return;
-
     const data = initTabData(tabId);
     const shortType = getShortType(type);
 
@@ -387,10 +388,10 @@ chrome.webRequest.onBeforeRequest.addListener(
           domain_counts: data.domain_counts,
           main_domain: data.main_domain,
           blocked_domains: blockedDomains,
-          ignored_domains: Array.from(ignoredDomains),
           mode: currentMode,
           allowed_domains: Array.from(allowedDomains),
-          blocking_enabled: blockingEnabled
+          blocking_enabled: blockingEnabled,
+          domain_rules: domainRules
         }
       }).catch(() => {
         // サイドパネルが開いていない場合は無視
@@ -437,6 +438,14 @@ async function blockDomain(domain) {
   );
   if (existingRule) {
     console.log(`Domain already blocked: ${domain}`);
+    // domainRulesは同期しておく
+    if (!domainRules[domain]) {
+      domainRules[domain] = { action: 'block', memo: '', tags: [] };
+      await saveDomainRules();
+    } else if (domainRules[domain].action !== 'block') {
+      domainRules[domain].action = 'block';
+      await saveDomainRules();
+    }
     return;
   }
 
@@ -458,6 +467,15 @@ async function blockDomain(domain) {
         }
       }]
     });
+
+    // domainRulesに同期
+    if (!domainRules[domain]) {
+      domainRules[domain] = { action: 'block', memo: '', tags: [] };
+    } else {
+      domainRules[domain].action = 'block';
+    }
+    await saveDomainRules();
+
     console.log(`Blocked domain: ${domain}, ruleId: ${ruleId}`);
   } catch (error) {
     console.error('Failed to block domain:', error);
@@ -483,27 +501,17 @@ async function unblockDomain(domain) {
     await chrome.declarativeNetRequest.updateDynamicRules({
       removeRuleIds: [ruleToRemove.id]
     });
+
+    // domainRulesからも削除
+    if (domainRules[domain] && domainRules[domain].action === 'block') {
+      delete domainRules[domain];
+      await saveDomainRules();
+    }
+
     console.log(`Unblocked domain: ${domain}, ruleId: ${ruleToRemove.id}`);
   } catch (error) {
     console.error('Failed to unblock domain:', error);
   }
-}
-
-// ドメインを除外リストに追加
-async function ignoreDomain(domain) {
-  ignoredDomains.add(domain);
-  await saveIgnoredDomains();
-
-  // 全タブのカウントからこのドメインを削除
-  tabData.forEach((data) => {
-    delete data.domain_counts[domain];
-  });
-}
-
-// ドメインを除外リストから削除
-async function unignoreDomain(domain) {
-  ignoredDomains.delete(domain);
-  await saveIgnoredDomains();
 }
 
 // 現在のブロック状態を取得（Chrome APIから直接取得）
@@ -568,10 +576,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         domain_counts: data?.domain_counts || {},
         main_domain: data?.main_domain || null,
         blocked_domains: blockedDomains,
-        ignored_domains: Array.from(ignoredDomains),
         mode: currentMode,
         allowed_domains: Array.from(allowedDomains),
-        blocking_enabled: blockingEnabled
+        blocking_enabled: blockingEnabled,
+        domain_rules: domainRules
       });
     })();
     return true;
@@ -582,7 +590,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       await blockDomain(domain);
       const blockedDomains = await getBlockedDomains();
-      sendResponse({ success: true, blocked_domains: blockedDomains });
+      sendResponse({ success: true, blocked_domains: blockedDomains, domain_rules: domainRules });
     })();
     return true;
   }
@@ -592,27 +600,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       await unblockDomain(domain);
       const blockedDomains = await getBlockedDomains();
-      sendResponse({ success: true, blocked_domains: blockedDomains });
-    })();
-    return true;
-  }
-
-  if (message.type === 'IGNORE_DOMAIN') {
-    const { domain } = message;
-    (async () => {
-      await initialize();
-      await ignoreDomain(domain);
-      sendResponse({ success: true, ignored_domains: Array.from(ignoredDomains) });
-    })();
-    return true;
-  }
-
-  if (message.type === 'UNIGNORE_DOMAIN') {
-    const { domain } = message;
-    (async () => {
-      await initialize();
-      await unignoreDomain(domain);
-      sendResponse({ success: true, ignored_domains: Array.from(ignoredDomains) });
+      sendResponse({ success: true, blocked_domains: blockedDomains, domain_rules: domainRules });
     })();
     return true;
   }
@@ -627,28 +615,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === 'GET_IGNORED_DOMAINS') {
-    (async () => {
-      await initialize();
-      sendResponse({ ignored_domains: Array.from(ignoredDomains) });
-    })();
-    return true;
-  }
-
-  // 一括スルー
-  if (message.type === 'BULK_IGNORE') {
-    const { domains } = message;
-    (async () => {
-      await initialize();
-      for (const domain of domains) {
-        await ignoreDomain(domain);
-      }
-      sendResponse({ success: true, ignored_domains: Array.from(ignoredDomains) });
-    })();
-    return true;
-  }
-
-  // 一括ブロック
+  // 一括ブロック（トラフィックタブから使用）
   if (message.type === 'BULK_BLOCK') {
     const { domains } = message;
     (async () => {
@@ -657,34 +624,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await blockDomain(domain);
       }
       const blockedDomains = await getBlockedDomains();
-      sendResponse({ success: true, blocked_domains: blockedDomains });
-    })();
-    return true;
-  }
-
-  // 一括ブロック解除
-  if (message.type === 'BULK_UNBLOCK') {
-    const { domains } = message;
-    (async () => {
-      await initialize();
-      for (const domain of domains) {
-        await unblockDomain(domain);
-      }
-      const blockedDomains = await getBlockedDomains();
-      sendResponse({ success: true, blocked_domains: blockedDomains });
-    })();
-    return true;
-  }
-
-  // 一括スルー解除
-  if (message.type === 'BULK_UNIGNORE') {
-    const { domains } = message;
-    (async () => {
-      await initialize();
-      for (const domain of domains) {
-        await unignoreDomain(domain);
-      }
-      sendResponse({ success: true, ignored_domains: Array.from(ignoredDomains) });
+      sendResponse({ success: true, blocked_domains: blockedDomains, domain_rules: domainRules });
     })();
     return true;
   }
@@ -714,7 +654,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({
         success: true,
         mode: currentMode,
-        allowed_domains: Array.from(allowedDomains)
+        allowed_domains: Array.from(allowedDomains),
+        domain_rules: domainRules
       });
     })();
     return true;
@@ -728,7 +669,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       await allowDomain(domain);
       sendResponse({
         success: true,
-        allowed_domains: Array.from(allowedDomains)
+        allowed_domains: Array.from(allowedDomains),
+        domain_rules: domainRules
       });
     })();
     return true;
@@ -742,7 +684,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       await disallowDomain(domain);
       sendResponse({
         success: true,
-        allowed_domains: Array.from(allowedDomains)
+        allowed_domains: Array.from(allowedDomains),
+        domain_rules: domainRules
       });
     })();
     return true;
@@ -757,173 +700,113 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  // 許可ドメインを統合
-  if (message.type === 'CONSOLIDATE_ALLOWED_DOMAINS') {
+  // ドメインルール一覧取得
+  if (message.type === 'GET_DOMAIN_RULES') {
     (async () => {
       await initialize();
-      const { consolidated, removed } = consolidateDomains(Array.from(allowedDomains));
-
-      // 許可リストを更新
-      allowedDomains = new Set(consolidated);
-      await saveAllowedDomains();
-
-      // 厳格モードのルールを更新
-      if (currentMode === 'strict') {
-        await updateStrictModeRule();
-      }
-
-      sendResponse({
-        success: true,
-        allowed_domains: Array.from(allowedDomains),
-        removed_count: removed.length,
-        removed_domains: removed
-      });
+      sendResponse({ domain_rules: domainRules });
     })();
     return true;
   }
 
-  // 許可ドメインを編集（置き換え）
-  if (message.type === 'EDIT_ALLOWED_DOMAIN') {
-    const { oldDomain, newDomain } = message;
+  // ルールメタデータ更新（memo, tags）
+  if (message.type === 'UPDATE_RULE_META') {
+    const { domain, memo, tags } = message;
     (async () => {
       await initialize();
-
-      // 古いドメインを削除、新しいドメインを追加
-      allowedDomains.delete(oldDomain);
-      allowedDomains.add(newDomain);
-      await saveAllowedDomains();
-
-      // 厳格モードのルールを更新
-      if (currentMode === 'strict') {
-        await updateStrictModeRule();
+      if (domainRules[domain]) {
+        if (memo !== undefined) domainRules[domain].memo = memo;
+        if (tags !== undefined) domainRules[domain].tags = tags;
+        await saveDomainRules();
+        sendResponse({ success: true, domain_rules: domainRules });
+      } else {
+        sendResponse({ success: false, error: 'Rule not found' });
       }
-
-      sendResponse({
-        success: true,
-        allowed_domains: Array.from(allowedDomains)
-      });
     })();
     return true;
   }
 
-  // ブロックドメインを編集（置き換え）
-  if (message.type === 'EDIT_BLOCKED_DOMAIN') {
-    const { oldDomain, newDomain } = message;
+  // ルールのアクション変更（block↔allow）
+  if (message.type === 'SET_RULE_ACTION') {
+    const { domain, action } = message;
     (async () => {
       await initialize();
-
-      // 古いルールを削除
-      const rules = await chrome.declarativeNetRequest.getDynamicRules();
-      const oldRule = rules.find(r =>
-        r.id !== STRICT_MODE_BLOCK_RULE_ID &&
-        r.condition.requestDomains &&
-        r.condition.requestDomains.includes(oldDomain)
-      );
-
-      const removeIds = oldRule ? [oldRule.id] : [];
-
-      // 新しいルールを追加（既存でなければ）
-      const existingNew = rules.find(r =>
-        r.id !== STRICT_MODE_BLOCK_RULE_ID &&
-        r.condition.requestDomains &&
-        r.condition.requestDomains.includes(newDomain)
-      );
-
-      const addRules = [];
-      if (!existingNew) {
-        addRules.push({
-          id: ruleIdCounter++,
-          priority: 2,
-          action: { type: 'block' },
-          condition: {
-            requestDomains: [newDomain],
-            resourceTypes: [
-              'main_frame', 'sub_frame', 'stylesheet', 'script',
-              'image', 'font', 'object', 'xmlhttprequest', 'ping',
-              'media', 'websocket', 'other'
-            ]
-          }
-        });
-      }
-
-      if (removeIds.length > 0 || addRules.length > 0) {
-        await chrome.declarativeNetRequest.updateDynamicRules({
-          removeRuleIds: removeIds,
-          addRules: addRules
-        });
-      }
-
-      const blockedDomains = await getBlockedDomains();
-      sendResponse({
-        success: true,
-        blocked_domains: blockedDomains
-      });
-    })();
-    return true;
-  }
-
-  // ブロックドメインを統合
-  if (message.type === 'CONSOLIDATE_BLOCKED_DOMAINS') {
-    (async () => {
-      await initialize();
-      const blockedDomains = await getBlockedDomains();
-      const { consolidated, removed } = consolidateDomains(blockedDomains);
-
-      // 統合されて不要になったルールを削除
-      const rules = await chrome.declarativeNetRequest.getDynamicRules();
-      const removeIds = [];
-
-      removed.forEach(domain => {
-        const rule = rules.find(r =>
-          r.id !== STRICT_MODE_BLOCK_RULE_ID &&
-          r.condition.requestDomains &&
-          r.condition.requestDomains.includes(domain)
-        );
-        if (rule) removeIds.push(rule.id);
-      });
-
-      // 新しいルートドメインを追加（まだない場合）
-      const addRules = [];
-      for (const domain of consolidated) {
-        const exists = rules.some(r =>
-          r.id !== STRICT_MODE_BLOCK_RULE_ID &&
-          r.condition.requestDomains &&
-          r.condition.requestDomains.includes(domain)
-        );
-        if (!exists && removed.some(d => extractRootDomain(d) === domain)) {
-          addRules.push({
-            id: ruleIdCounter++,
-            priority: 2,
-            action: { type: 'block' },
-            condition: {
-              requestDomains: [domain],
-              resourceTypes: [
-                'main_frame', 'sub_frame', 'stylesheet', 'script',
-                'image', 'font', 'object', 'xmlhttprequest', 'ping',
-                'media', 'websocket', 'other'
-              ]
-            }
-          });
+      if (action === 'block') {
+        // allow → block
+        await blockDomain(domain);
+      } else if (action === 'allow') {
+        // block → allow
+        if (await isBlockedDomain(domain)) {
+          await unblockDomain(domain);
         }
+        await allowDomain(domain);
       }
-
-      if (removeIds.length > 0 || addRules.length > 0) {
-        await chrome.declarativeNetRequest.updateDynamicRules({
-          removeRuleIds: removeIds,
-          addRules: addRules
-        });
-      }
-
-      const newBlockedDomains = await getBlockedDomains();
+      const blockedDomains = await getBlockedDomains();
       sendResponse({
         success: true,
-        blocked_domains: newBlockedDomains,
-        removed_count: removed.length,
-        removed_domains: removed
+        blocked_domains: blockedDomains,
+        allowed_domains: Array.from(allowedDomains),
+        domain_rules: domainRules
       });
     })();
     return true;
   }
+
+  // ルール削除
+  if (message.type === 'DELETE_RULE') {
+    const { domain } = message;
+    (async () => {
+      await initialize();
+      const rule = domainRules[domain];
+      if (rule) {
+        if (rule.action === 'block') {
+          await unblockDomain(domain);
+        } else if (rule.action === 'allow') {
+          await disallowDomain(domain);
+        }
+        // unblockDomain/disallowDomainで削除されなかった場合に備えて
+        delete domainRules[domain];
+        await saveDomainRules();
+      }
+      const blockedDomains = await getBlockedDomains();
+      sendResponse({
+        success: true,
+        blocked_domains: blockedDomains,
+        allowed_domains: Array.from(allowedDomains),
+        domain_rules: domainRules
+      });
+    })();
+    return true;
+  }
+
+  // ルール追加
+  if (message.type === 'ADD_RULE') {
+    const { domain, action, memo, tags } = message;
+    (async () => {
+      await initialize();
+      // enforcement層に反映
+      if (action === 'block') {
+        await blockDomain(domain);
+      } else if (action === 'allow') {
+        await allowDomain(domain);
+      }
+      // メタデータを上書き
+      if (domainRules[domain]) {
+        if (memo !== undefined) domainRules[domain].memo = memo;
+        if (tags !== undefined) domainRules[domain].tags = tags;
+        await saveDomainRules();
+      }
+      const blockedDomains = await getBlockedDomains();
+      sendResponse({
+        success: true,
+        blocked_domains: blockedDomains,
+        allowed_domains: Array.from(allowedDomains),
+        domain_rules: domainRules
+      });
+    })();
+    return true;
+  }
+
 });
 
 // 拡張機能アイコンクリックでサイドパネルを開く

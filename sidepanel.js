@@ -34,17 +34,28 @@ class DomainTrafficInspector {
       domain_counts: {},
       main_domain: null,
       blocked_domains: [],
-      ignored_domains: [],
       mode: 'normal',
       allowed_domains: [],
-      blocking_enabled: true
+      blocking_enabled: true,
+      domain_rules: {}
     };
+    this.domainRules = {};
+    this.expandedTags = new Set();
     this.sortBy = 'count';
     this.searchQuery = '';
     this.activeTab = 'traffic';
-    this.trafficFilter = 'all'; // 'all', 'passing', 'blocked'
+    this.trafficFilter = 'all';
+    this.editingRuleDomain = null;
+    this.showingAddForm = false;
 
     this.init();
+  }
+
+  // HTMLエスケープ
+  escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
   }
 
   // ドメインが広告/トラッキングの可能性があるか判定
@@ -62,12 +73,9 @@ class DomainTrafficInspector {
   // サードパーティか判定
   isThirdParty(domain) {
     if (!this.domainData.main_domain) return false;
-    // メインドメインと一致、またはサブドメインならファーストパーティ
     const mainDomain = this.domainData.main_domain;
     if (domain === mainDomain) return false;
-    // サブドメインチェック（例：www.example.com と example.com）
     if (domain.endsWith('.' + mainDomain) || mainDomain.endsWith('.' + domain)) return false;
-    // ルートドメイン比較（例：sub.example.com と example.com）
     const getDomainRoot = (d) => {
       const parts = d.split('.');
       return parts.length >= 2 ? parts.slice(-2).join('.') : d;
@@ -101,26 +109,18 @@ class DomainTrafficInspector {
     const clearBtn = document.getElementById('clearBtn');
     clearBtn.addEventListener('click', () => this.clearCounts());
 
-    // ソートボタン
-    const sortBtns = document.querySelectorAll('.sort-btn');
-    sortBtns.forEach(btn => {
-      btn.addEventListener('click', () => {
-        sortBtns.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        this.sortBy = btn.dataset.sort;
-        this.render();
-      });
+    // ソートセレクト
+    const sortSelect = document.getElementById('sortSelect');
+    sortSelect.addEventListener('change', (e) => {
+      this.sortBy = e.target.value;
+      this.render();
     });
 
-    // フィルタボタン
-    const filterBtns = document.querySelectorAll('.filter-btn');
-    filterBtns.forEach(btn => {
-      btn.addEventListener('click', () => {
-        filterBtns.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        this.trafficFilter = btn.dataset.filter;
-        this.render();
-      });
+    // フィルタセレクト
+    const filterSelect = document.getElementById('filterSelect');
+    filterSelect.addEventListener('change', (e) => {
+      this.trafficFilter = e.target.value;
+      this.render();
     });
 
     // タブ切り替え
@@ -140,41 +140,25 @@ class DomainTrafficInspector {
       await this.loadData();
     });
 
-    // 一括スルーボタン
-    const bulkIgnoreBtn = document.getElementById('bulkIgnoreBtn');
-    bulkIgnoreBtn.addEventListener('click', () => this.bulkIgnore());
-
     // 一括ブロックボタン
     const bulkBlockBtn = document.getElementById('bulkBlockBtn');
     bulkBlockBtn.addEventListener('click', () => this.bulkBlock());
-
-    // 一括ブロック解除ボタン
-    const bulkUnblockBtn = document.getElementById('bulkUnblockBtn');
-    bulkUnblockBtn.addEventListener('click', () => this.bulkUnblock());
-
-    // 一括スルー解除ボタン
-    const bulkUnignoreBtn = document.getElementById('bulkUnignoreBtn');
-    bulkUnignoreBtn.addEventListener('click', () => this.bulkUnignore());
 
     // モードトグル
     const modeToggle = document.getElementById('modeToggle');
     modeToggle.addEventListener('change', () => this.toggleMode());
 
-    // 一括許可解除ボタン（厳格モード用）
-    const bulkDisallowBtn = document.getElementById('bulkDisallowBtn');
-    bulkDisallowBtn.addEventListener('click', () => this.bulkDisallow());
-
-    // ブロックドメイン統合ボタン
-    const consolidateBlockedBtn = document.getElementById('consolidateBlockedBtn');
-    consolidateBlockedBtn.addEventListener('click', () => this.consolidateBlocked());
-
-    // 許可ドメイン統合ボタン
-    const consolidateAllowedBtn = document.getElementById('consolidateAllowedBtn');
-    consolidateAllowedBtn.addEventListener('click', () => this.consolidateAllowed());
-
     // ブロック機能ON/OFFスイッチ
     const blockingSwitch = document.getElementById('blockingSwitch');
     blockingSwitch.addEventListener('change', () => this.toggleBlocking());
+
+    // ルールタブ: 追加ボタン
+    const addRuleBtn = document.getElementById('addRuleBtn');
+    addRuleBtn.addEventListener('click', () => this.showAddRuleForm());
+
+    // ルールタブ: 全削除ボタン
+    const deleteAllRulesBtn = document.getElementById('deleteAllRulesBtn');
+    deleteAllRulesBtn.addEventListener('click', () => this.deleteAllRules());
   }
 
   updateTabPanels() {
@@ -183,21 +167,17 @@ class DomainTrafficInspector {
 
     if (this.activeTab === 'traffic') {
       document.getElementById('trafficPanel').classList.add('active');
-    } else if (this.activeTab === 'blocked') {
-      document.getElementById('blockedPanel').classList.add('active');
-    } else if (this.activeTab === 'allowed') {
-      document.getElementById('allowedPanel').classList.add('active');
-    } else {
-      document.getElementById('ignoredPanel').classList.add('active');
+    } else if (this.activeTab === 'rules') {
+      document.getElementById('rulesPanel').classList.add('active');
     }
   }
 
   startListening() {
-    // バックグラウンドからの更新を受信
     chrome.runtime.onMessage.addListener((message) => {
       if (message.type === 'UPDATE_COUNTS' && message.tabId === this.currentTabId) {
         const oldCounts = { ...this.domainData.domain_counts };
         this.domainData = message.data;
+        this.domainRules = message.data.domain_rules || {};
         this.render(oldCounts);
       }
     });
@@ -212,6 +192,7 @@ class DomainTrafficInspector {
         tabId: this.currentTabId
       });
       this.domainData = response;
+      this.domainRules = response.domain_rules || {};
       this.render();
     } catch (error) {
       console.error('Failed to load data:', error);
@@ -241,55 +222,7 @@ class DomainTrafficInspector {
 
     if (response.success) {
       this.domainData.blocked_domains = response.blocked_domains;
-      this.render();
-    }
-  }
-
-  async ignoreDomain(domain) {
-    const response = await chrome.runtime.sendMessage({
-      type: 'IGNORE_DOMAIN',
-      domain
-    });
-
-    if (response.success) {
-      this.domainData.ignored_domains = response.ignored_domains;
-      // カウントからも削除
-      delete this.domainData.domain_counts[domain];
-      this.render();
-    }
-  }
-
-  async unignoreDomain(domain) {
-    const response = await chrome.runtime.sendMessage({
-      type: 'UNIGNORE_DOMAIN',
-      domain
-    });
-
-    if (response.success) {
-      this.domainData.ignored_domains = response.ignored_domains;
-      this.render();
-    }
-  }
-
-  // 表示中のドメインをすべてスルー
-  async bulkIgnore() {
-    const visibleDomains = this.getSortedDomains().map(([domain]) => domain);
-    if (visibleDomains.length === 0) return;
-
-    const confirmed = confirm(`${visibleDomains.length}件のドメインをすべてスルーしますか？`);
-    if (!confirmed) return;
-
-    const response = await chrome.runtime.sendMessage({
-      type: 'BULK_IGNORE',
-      domains: visibleDomains
-    });
-
-    if (response.success) {
-      this.domainData.ignored_domains = response.ignored_domains;
-      // カウントからも削除
-      visibleDomains.forEach(domain => {
-        delete this.domainData.domain_counts[domain];
-      });
+      this.domainRules = response.domain_rules || this.domainRules;
       this.render();
     }
   }
@@ -309,44 +242,7 @@ class DomainTrafficInspector {
 
     if (response.success) {
       this.domainData.blocked_domains = response.blocked_domains;
-      this.render();
-    }
-  }
-
-  // ブロック中のドメインをすべて解除
-  async bulkUnblock() {
-    const blockedDomains = this.domainData.blocked_domains || [];
-    if (blockedDomains.length === 0) return;
-
-    const confirmed = confirm(`${blockedDomains.length}件のブロックをすべて解除しますか？`);
-    if (!confirmed) return;
-
-    const response = await chrome.runtime.sendMessage({
-      type: 'BULK_UNBLOCK',
-      domains: blockedDomains
-    });
-
-    if (response.success) {
-      this.domainData.blocked_domains = response.blocked_domains;
-      this.render();
-    }
-  }
-
-  // スルー中のドメインをすべて解除
-  async bulkUnignore() {
-    const ignoredDomains = this.domainData.ignored_domains || [];
-    if (ignoredDomains.length === 0) return;
-
-    const confirmed = confirm(`${ignoredDomains.length}件のスルーをすべて解除しますか？`);
-    if (!confirmed) return;
-
-    const response = await chrome.runtime.sendMessage({
-      type: 'BULK_UNIGNORE',
-      domains: ignoredDomains
-    });
-
-    if (response.success) {
-      this.domainData.ignored_domains = response.ignored_domains;
+      this.domainRules = response.domain_rules || this.domainRules;
       this.render();
     }
   }
@@ -365,6 +261,7 @@ class DomainTrafficInspector {
     if (response.success) {
       this.domainData.mode = response.mode;
       this.domainData.allowed_domains = response.allowed_domains;
+      this.domainRules = response.domain_rules || this.domainRules;
       this.updateModeUI();
       this.render();
     }
@@ -382,7 +279,6 @@ class DomainTrafficInspector {
     if (response.success) {
       this.domainData.blocking_enabled = response.blocking_enabled;
       this.updateBlockingUI();
-      // 状態が変わったのでデータを再読み込み
       await this.loadData();
     }
   }
@@ -407,7 +303,6 @@ class DomainTrafficInspector {
     const modeDescription = document.getElementById('modeDescription');
     const normalLabel = document.getElementById('normalModeLabel');
     const strictLabel = document.getElementById('strictModeLabel');
-    const allowedTab = document.getElementById('allowedTab');
     const container = document.querySelector('.container');
 
     modeToggle.checked = mode === 'strict';
@@ -416,21 +311,12 @@ class DomainTrafficInspector {
       modeDescription.textContent = 'ホワイトリスト方式：許可したドメインのみ通信可能';
       normalLabel.classList.remove('active');
       strictLabel.classList.add('active');
-      allowedTab.style.display = '';
       container.classList.add('strict-mode');
     } else {
       modeDescription.textContent = 'ブラックリスト方式：選択したドメインをブロック';
       normalLabel.classList.add('active');
       strictLabel.classList.remove('active');
-      allowedTab.style.display = 'none';
       container.classList.remove('strict-mode');
-      // 厳格モードタブが選択されていた場合はトラフィックタブに戻す
-      if (this.activeTab === 'allowed') {
-        this.activeTab = 'traffic';
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        document.querySelector('[data-tab="traffic"]').classList.add('active');
-        this.updateTabPanels();
-      }
     }
   }
 
@@ -443,6 +329,7 @@ class DomainTrafficInspector {
 
     if (response.success) {
       this.domainData.allowed_domains = response.allowed_domains;
+      this.domainRules = response.domain_rules || this.domainRules;
       this.render();
     }
   }
@@ -456,129 +343,7 @@ class DomainTrafficInspector {
 
     if (response.success) {
       this.domainData.allowed_domains = response.allowed_domains;
-      this.render();
-    }
-  }
-
-  // 許可中のドメインをすべて解除
-  async bulkDisallow() {
-    const allowedDomains = this.domainData.allowed_domains || [];
-    if (allowedDomains.length === 0) return;
-
-    const confirmed = confirm(`${allowedDomains.length}件の許可をすべて解除しますか？\n（メインドメインも含まれます）`);
-    if (!confirmed) return;
-
-    for (const domain of allowedDomains) {
-      await chrome.runtime.sendMessage({
-        type: 'DISALLOW_DOMAIN',
-        domain
-      });
-    }
-
-    const response = await chrome.runtime.sendMessage({
-      type: 'GET_ALLOWED_DOMAINS'
-    });
-
-    this.domainData.allowed_domains = response.allowed_domains;
-    this.render();
-  }
-
-  // ブロックドメインを統合
-  async consolidateBlocked() {
-    const blockedDomains = this.domainData.blocked_domains || [];
-    if (blockedDomains.length < 2) {
-      alert('統合するには2件以上のドメインが必要です');
-      return;
-    }
-
-    const response = await chrome.runtime.sendMessage({
-      type: 'CONSOLIDATE_BLOCKED_DOMAINS'
-    });
-
-    if (response.success) {
-      this.domainData.blocked_domains = response.blocked_domains;
-      if (response.removed_count > 0) {
-        alert(`${response.removed_count}件のサブドメインをルートドメインに統合しました`);
-      } else {
-        alert('統合可能なドメインはありませんでした');
-      }
-      this.render();
-    }
-  }
-
-  // 許可ドメインを統合
-  async consolidateAllowed() {
-    const allowedDomains = this.domainData.allowed_domains || [];
-    if (allowedDomains.length < 2) {
-      alert('統合するには2件以上のドメインが必要です');
-      return;
-    }
-
-    const response = await chrome.runtime.sendMessage({
-      type: 'CONSOLIDATE_ALLOWED_DOMAINS'
-    });
-
-    if (response.success) {
-      this.domainData.allowed_domains = response.allowed_domains;
-      if (response.removed_count > 0) {
-        alert(`${response.removed_count}件のサブドメインをルートドメインに統合しました`);
-      } else {
-        alert('統合可能なドメインはありませんでした');
-      }
-      this.render();
-    }
-  }
-
-  // ブロックドメインを編集
-  async editBlockedDomain(oldDomain) {
-    const newDomain = prompt(
-      'ドメインを編集（ルートドメインにするとサブドメインも含まれます）',
-      oldDomain
-    );
-
-    if (!newDomain || newDomain === oldDomain) return;
-
-    // 簡易バリデーション
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$/.test(newDomain)) {
-      alert('無効なドメイン形式です');
-      return;
-    }
-
-    const response = await chrome.runtime.sendMessage({
-      type: 'EDIT_BLOCKED_DOMAIN',
-      oldDomain,
-      newDomain
-    });
-
-    if (response.success) {
-      this.domainData.blocked_domains = response.blocked_domains;
-      this.render();
-    }
-  }
-
-  // 許可ドメインを編集
-  async editAllowedDomain(oldDomain) {
-    const newDomain = prompt(
-      'ドメインを編集（ルートドメインにするとサブドメインも含まれます）',
-      oldDomain
-    );
-
-    if (!newDomain || newDomain === oldDomain) return;
-
-    // 簡易バリデーション
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$/.test(newDomain)) {
-      alert('無効なドメイン形式です');
-      return;
-    }
-
-    const response = await chrome.runtime.sendMessage({
-      type: 'EDIT_ALLOWED_DOMAIN',
-      oldDomain,
-      newDomain
-    });
-
-    if (response.success) {
-      this.domainData.allowed_domains = response.allowed_domains;
+      this.domainRules = response.domain_rules || this.domainRules;
       this.render();
     }
   }
@@ -587,39 +352,31 @@ class DomainTrafficInspector {
     const { domain_counts, blocked_domains, allowed_domains, mode } = this.domainData;
     let domains = Object.entries(domain_counts);
 
-    // ブロック済みドメインを除外（ブロック中タブで表示するため）
+    // ブロック済みドメインを除外
     domains = domains.filter(([domain]) =>
       !blocked_domains.includes(domain)
     );
 
     // トラフィックフィルタ
     if (this.trafficFilter === 'passing') {
-      // 通過中のみ表示
       if (mode === 'strict') {
-        // 厳格モード：許可リストに含まれるドメインのみ
         domains = domains.filter(([domain]) =>
           allowed_domains?.includes(domain)
         );
       }
-      // 通常モードでは、ブロックされていないものはすべて通過（既に上で除外済み）
     } else if (this.trafficFilter === 'blocked') {
-      // 停止中のみ表示
       if (mode === 'strict') {
-        // 厳格モード：許可リストに含まれないドメイン
         domains = domains.filter(([domain]) =>
           !allowed_domains?.includes(domain)
         );
       } else {
-        // 通常モードでは、ブロックされていないのでここでは空
         domains = [];
       }
     } else if (this.trafficFilter === 'ad') {
-      // 広告/トラッキングのみ表示
       domains = domains.filter(([domain]) =>
         this.isLikelyAd(domain)
       );
     } else if (this.trafficFilter === '3p') {
-      // サードパーティのみ表示
       domains = domains.filter(([domain]) =>
         this.isThirdParty(domain)
       );
@@ -632,7 +389,7 @@ class DomainTrafficInspector {
       );
     }
 
-    // ソート（新しいデータ構造に対応）
+    // ソート
     if (this.sortBy === 'count') {
       domains.sort((a, b) => {
         const countA = typeof a[1] === 'object' ? a[1].total : a[1];
@@ -650,57 +407,29 @@ class DomainTrafficInspector {
     this.updateBlockingUI();
     this.updateModeUI();
     this.renderTrafficList(oldCounts);
-    this.renderBlockedList();
-    this.renderIgnoredList();
-    this.renderAllowedList();
+    this.renderRulesList();
     this.updateStats();
     this.updateBulkActions();
     this.updateTabCounts();
   }
 
   updateTabCounts() {
-    const blockedCount = this.domainData.blocked_domains?.length || 0;
-    const allowedCount = this.domainData.allowed_domains?.length || 0;
-    const ignoredCount = this.domainData.ignored_domains?.length || 0;
-
-    const blockedTabCount = document.getElementById('blockedTabCount');
-    const allowedTabCount = document.getElementById('allowedTabCount');
-    const ignoredTabCount = document.getElementById('ignoredTabCount');
-
-    blockedTabCount.textContent = blockedCount;
-    blockedTabCount.dataset.count = blockedCount;
-
-    allowedTabCount.textContent = allowedCount;
-    allowedTabCount.dataset.count = allowedCount;
-
-    ignoredTabCount.textContent = ignoredCount;
-    ignoredTabCount.dataset.count = ignoredCount;
+    const rulesCount = Object.keys(this.domainRules).length;
+    const rulesTabCount = document.getElementById('rulesTabCount');
+    rulesTabCount.textContent = rulesCount;
+    rulesTabCount.dataset.count = rulesCount;
   }
 
   updateBulkActions() {
     const sortedDomains = this.getSortedDomains();
     const visibleCount = sortedDomains.length;
 
-    // 表示件数を更新
     document.getElementById('visibleCount').textContent = visibleCount;
 
-    // ボタンの有効/無効状態を更新
-    const bulkIgnoreBtn = document.getElementById('bulkIgnoreBtn');
     const bulkBlockBtn = document.getElementById('bulkBlockBtn');
-
-    bulkIgnoreBtn.disabled = visibleCount === 0;
     bulkBlockBtn.disabled = visibleCount === 0;
 
-    // 検索中かどうかでテキストを変更
     if (this.searchQuery) {
-      bulkIgnoreBtn.innerHTML = `
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
-          <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
-          <line x1="1" y1="1" x2="23" y2="23"/>
-        </svg>
-        絞込みをスルー
-      `;
       bulkBlockBtn.innerHTML = `
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"/>
@@ -709,14 +438,6 @@ class DomainTrafficInspector {
         絞込みをブロック
       `;
     } else {
-      bulkIgnoreBtn.innerHTML = `
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
-          <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
-          <line x1="1" y1="1" x2="23" y2="23"/>
-        </svg>
-        すべてスルー
-      `;
       bulkBlockBtn.innerHTML = `
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"/>
@@ -744,17 +465,17 @@ class DomainTrafficInspector {
 
     const typeOrder = ['JS', 'XHR', 'IMG', 'CSS', 'FONT', 'FRAME', 'MEDIA', 'DOC', 'PING', 'WS', 'OTHER'];
     const typeColors = {
-      'JS': '#f59e0b',    // オレンジ（スクリプト = 注意）
-      'XHR': '#ef4444',   // 赤（通信 = 注意）
-      'IMG': '#22c55e',   // 緑
-      'CSS': '#3b82f6',   // 青
-      'FONT': '#8b5cf6',  // 紫
-      'FRAME': '#ec4899', // ピンク
-      'MEDIA': '#06b6d4', // シアン
-      'DOC': '#6b7280',   // グレー
-      'PING': '#ef4444',  // 赤（トラッキング）
-      'WS': '#f59e0b',    // オレンジ
-      'OTHER': '#6b7280'  // グレー
+      'JS': '#f59e0b',
+      'XHR': '#ef4444',
+      'IMG': '#22c55e',
+      'CSS': '#3b82f6',
+      'FONT': '#8b5cf6',
+      'FRAME': '#ec4899',
+      'MEDIA': '#06b6d4',
+      'DOC': '#6b7280',
+      'PING': '#ef4444',
+      'WS': '#f59e0b',
+      'OTHER': '#6b7280'
     };
 
     return typeOrder
@@ -768,7 +489,6 @@ class DomainTrafficInspector {
     const emptyState = document.getElementById('emptyState');
     const sortedDomains = this.getSortedDomains();
 
-    // 空状態の表示切替
     if (sortedDomains.length === 0) {
       emptyState.style.display = 'flex';
       const items = domainList.querySelectorAll('.domain-item');
@@ -780,10 +500,8 @@ class DomainTrafficInspector {
 
     const isStrictMode = this.domainData.mode === 'strict';
 
-    // 現在のドメイン一覧をMapで管理
     const currentDomains = new Set(sortedDomains.map(([d]) => d));
 
-    // 既存の要素をドメインでマッピング
     const existingElements = new Map();
     domainList.querySelectorAll('.domain-item').forEach(item => {
       const domain = item.dataset.domain;
@@ -792,7 +510,6 @@ class DomainTrafficInspector {
       }
     });
 
-    // 不要な要素を削除
     existingElements.forEach((item, domain) => {
       if (!currentDomains.has(domain)) {
         item.remove();
@@ -800,25 +517,21 @@ class DomainTrafficInspector {
       }
     });
 
-    // 各ドメインを処理
     sortedDomains.forEach(([domain, data], index) => {
       const isAllowed = this.domainData.allowed_domains?.includes(domain);
       const isAd = this.isLikelyAd(domain);
       const isSafe = this.isLikelySafe(domain);
       const isThirdParty = this.isThirdParty(domain);
 
-      // カウント取得
       const count = typeof data === 'object' ? data.total : data;
       const types = typeof data === 'object' ? data.types : null;
       const oldCount = oldCounts[domain] ? (typeof oldCounts[domain] === 'object' ? oldCounts[domain].total : oldCounts[domain]) : undefined;
       const wasUpdated = oldCount !== undefined && oldCount !== count;
 
-      // 既存の要素があれば更新、なければ作成
       let item = existingElements.get(domain);
       let isNewItem = false;
 
       if (item) {
-        // カウントのみ更新（チラつき防止）
         const countBadge = item.querySelector('.count-badge');
         if (countBadge) {
           countBadge.textContent = count;
@@ -828,13 +541,11 @@ class DomainTrafficInspector {
           }
         }
 
-        // タイプバッジを更新
         const typeBadges = item.querySelector('.type-badges');
         if (typeBadges) {
           typeBadges.innerHTML = this.renderTypeBadges(types);
         }
 
-        // クラスを更新（厳格モード切り替え時）
         let itemClass = 'domain-item';
         if (isStrictMode) {
           if (isAllowed) {
@@ -848,18 +559,15 @@ class DomainTrafficInspector {
         }
         item.className = itemClass;
       } else {
-        // 新規作成
         item = this.createDomainItem(domain, data, isStrictMode, isAllowed, isAd, isSafe, isThirdParty, wasUpdated);
         existingElements.set(domain, item);
         isNewItem = true;
       }
 
-      // 正しい位置に配置
       const allItems = Array.from(domainList.querySelectorAll('.domain-item'));
       const currentIndex = allItems.indexOf(item);
 
       if (isNewItem || currentIndex !== index) {
-        // 新規アイテムまたは順序が違う場合は正しい位置に挿入
         if (index === 0) {
           const firstItem = domainList.querySelector('.domain-item');
           if (firstItem) {
@@ -880,12 +588,10 @@ class DomainTrafficInspector {
     });
   }
 
-  // ドメインアイテムを作成
   createDomainItem(domain, data, isStrictMode, isAllowed, isAd, isSafe, isThirdParty, wasUpdated) {
     const count = typeof data === 'object' ? data.total : data;
     const types = typeof data === 'object' ? data.types : null;
 
-    // タグを構築
     let tags = '';
     if (isAd) {
       tags += '<span class="domain-tag tag-ad" title="広告/トラッキングの可能性">広告</span>';
@@ -899,10 +605,9 @@ class DomainTrafficInspector {
 
     const item = document.createElement('div');
     item.dataset.domain = domain;
-    item.dataset.new = 'true';  // 新規追加アニメーション用
-    setTimeout(() => delete item.dataset.new, 200);  // アニメーション後に削除
+    item.dataset.new = 'true';
+    setTimeout(() => delete item.dataset.new, 200);
 
-    // クラスを設定
     let itemClass = 'domain-item';
     if (isStrictMode) {
       if (isAllowed) {
@@ -917,7 +622,6 @@ class DomainTrafficInspector {
 
     item.className = itemClass;
 
-    // アクションボタンを構築
     let actionButtons = '';
 
     if (isStrictMode) {
@@ -951,7 +655,7 @@ class DomainTrafficInspector {
     item.innerHTML = `
       <div class="domain-info">
         <div class="domain-header">
-          <div class="domain-name" title="${domain}">${domain}</div>
+          <div class="domain-name" title="${this.escapeHtml(domain)}">${this.escapeHtml(domain)}</div>
           <div class="domain-tags">${tags}</div>
         </div>
         <div class="domain-meta">
@@ -962,20 +666,9 @@ class DomainTrafficInspector {
         </div>
       </div>
       <div class="domain-actions">
-        <button class="ignore-btn" title="スルー（監視対象から除外）">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
-            <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
-            <line x1="1" y1="1" x2="23" y2="23"/>
-          </svg>
-        </button>
         ${actionButtons}
       </div>
     `;
-
-    // イベント
-    const ignoreBtn = item.querySelector('.ignore-btn');
-    ignoreBtn.addEventListener('click', () => this.ignoreDomain(domain));
 
     const blockBtn = item.querySelector('.block-btn');
     if (blockBtn) {
@@ -996,238 +689,452 @@ class DomainTrafficInspector {
     return item;
   }
 
-  renderBlockedList() {
-    const blockedList = document.getElementById('blockedList');
-    const emptyState = document.getElementById('blockedEmptyState');
-    const blockedDomains = this.domainData.blocked_domains || [];
+  // ========================================
+  // Rules Tab
+  // ========================================
 
-    // フィルタリング
-    let filteredDomains = blockedDomains;
+  renderRulesList() {
+    const rulesList = document.getElementById('rulesList');
+    const emptyState = document.getElementById('rulesEmptyState');
+    const rules = this.domainRules;
+    const ruleEntries = Object.entries(rules);
+
+    // 検索フィルタ
+    let filtered = ruleEntries;
     if (this.searchQuery) {
-      filteredDomains = blockedDomains.filter(domain =>
-        domain.toLowerCase().includes(this.searchQuery)
+      filtered = ruleEntries.filter(([domain, rule]) =>
+        domain.toLowerCase().includes(this.searchQuery) ||
+        (rule.memo && rule.memo.toLowerCase().includes(this.searchQuery)) ||
+        (rule.tags && rule.tags.some(t => t.toLowerCase().includes(this.searchQuery)))
       );
     }
 
-    // 件数表示を更新
-    document.getElementById('blockedListCount').textContent = filteredDomains.length;
+    // ルール件数を更新
+    document.getElementById('rulesCount').textContent = filtered.length;
 
-    // 一括解除ボタンの状態
-    const bulkUnblockBtn = document.getElementById('bulkUnblockBtn');
-    bulkUnblockBtn.disabled = blockedDomains.length === 0;
-
-    // 空状態の表示切替
-    if (filteredDomains.length === 0) {
+    // 空状態
+    if (filtered.length === 0) {
       emptyState.style.display = 'flex';
-      const items = blockedList.querySelectorAll('.domain-item');
-      items.forEach(item => item.remove());
+      // アコーディオングループをクリア
+      rulesList.querySelectorAll('.rules-group, .add-rule-form').forEach(el => el.remove());
+      // 追加フォームが開いている場合は再描画
+      if (this.showingAddForm) {
+        this.insertAddRuleForm(rulesList, emptyState);
+      }
       return;
     }
 
     emptyState.style.display = 'none';
 
-    // リストを構築
+    // タグでグループ化
+    const groups = new Map(); // tag -> [{domain, rule}]
+    const noTag = [];
+
+    filtered.forEach(([domain, rule]) => {
+      if (rule.tags && rule.tags.length > 0) {
+        rule.tags.forEach(tag => {
+          if (!groups.has(tag)) {
+            groups.set(tag, []);
+          }
+          groups.get(tag).push({ domain, rule });
+        });
+      } else {
+        noTag.push({ domain, rule });
+      }
+    });
+
+    // タグ名でソート
+    const sortedTags = Array.from(groups.keys()).sort((a, b) => a.localeCompare(b));
+
+    // DOM構築
     const fragment = document.createDocumentFragment();
 
-    filteredDomains.forEach(domain => {
-      const item = document.createElement('div');
-      item.className = 'domain-item blocked';
-      item.innerHTML = `
-        <div class="domain-info">
-          <div class="domain-name" title="${domain}">${domain}</div>
-          <div class="domain-meta">
-            <span class="request-count" style="color: var(--danger);">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="10"/>
-                <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
-              </svg>
-              ブロック中
-            </span>
+    // 追加フォーム
+    if (this.showingAddForm) {
+      fragment.appendChild(this.createAddRuleFormElement());
+    }
+
+    // タグ付きグループ
+    sortedTags.forEach(tag => {
+      const items = groups.get(tag);
+      fragment.appendChild(this.createRulesGroup(tag, items));
+    });
+
+    // タグなしグループ
+    if (noTag.length > 0) {
+      fragment.appendChild(this.createRulesGroup('タグなし', noTag));
+    }
+
+    // 既存をクリアして再描画
+    rulesList.querySelectorAll('.rules-group, .add-rule-form').forEach(el => el.remove());
+    rulesList.insertBefore(fragment, emptyState);
+  }
+
+  createRulesGroup(tag, items) {
+    const group = document.createElement('div');
+    group.className = 'rules-group';
+    if (this.expandedTags.has(tag)) {
+      group.classList.add('expanded');
+    }
+
+    const header = document.createElement('div');
+    header.className = 'rules-group-header';
+    header.innerHTML = `
+      <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="9 18 15 12 9 6"/>
+      </svg>
+      <span class="rules-group-title">${this.escapeHtml(tag)}</span>
+      <span class="rules-group-count">${items.length}</span>
+    `;
+
+    header.addEventListener('click', () => {
+      if (this.expandedTags.has(tag)) {
+        this.expandedTags.delete(tag);
+      } else {
+        this.expandedTags.add(tag);
+      }
+      group.classList.toggle('expanded');
+    });
+
+    const body = document.createElement('div');
+    body.className = 'rules-group-body';
+
+    // ドメイン名でソート（重複除去はしない、同一ドメインが複数タグに属する場合あり）
+    const uniqueDomains = new Map();
+    items.forEach(item => {
+      if (!uniqueDomains.has(item.domain)) {
+        uniqueDomains.set(item.domain, item);
+      }
+    });
+
+    Array.from(uniqueDomains.values())
+      .sort((a, b) => a.domain.localeCompare(b.domain))
+      .forEach(({ domain, rule }) => {
+        body.appendChild(this.createRuleItem(domain, rule));
+      });
+
+    group.appendChild(header);
+    group.appendChild(body);
+    return group;
+  }
+
+  createRuleItem(domain, rule) {
+    const item = document.createElement('div');
+    item.className = `rule-item ${rule.action}`;
+    item.dataset.domain = domain;
+
+    const tagsHtml = (rule.tags || [])
+      .map(t => `<span class="rule-tag-chip">${this.escapeHtml(t)}</span>`)
+      .join('');
+
+    const memoHtml = rule.memo
+      ? `<span class="rule-item-memo" title="${this.escapeHtml(rule.memo)}">${this.escapeHtml(rule.memo)}</span>`
+      : '';
+
+    item.innerHTML = `
+      <div class="rule-item-row">
+        <div class="rule-item-info">
+          <div class="rule-item-domain" title="${this.escapeHtml(domain)}">${this.escapeHtml(domain)}</div>
+          <div class="rule-item-meta">
+            <span class="rule-action-badge ${rule.action}">${rule.action === 'block' ? 'ブロック' : '許可'}</span>
+            ${memoHtml}
+            <div class="rule-item-tags">${tagsHtml}</div>
           </div>
         </div>
-        <div class="domain-actions">
-          <button class="edit-btn" title="ドメインを編集">
+        <div class="rule-item-actions">
+          <button class="edit-btn" title="編集">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
               <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
             </svg>
           </button>
-          <button class="restore-btn" title="ブロック解除">
+          <button class="delete-btn" title="削除">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/>
-              <path d="M9 12l2 2 4-4"/>
+              <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
             </svg>
           </button>
         </div>
-      `;
+      </div>
+    `;
 
-      const editBtn = item.querySelector('.edit-btn');
-      editBtn.addEventListener('click', () => this.editBlockedDomain(domain));
+    // 編集中ならフォームを表示
+    if (this.editingRuleDomain === domain) {
+      item.appendChild(this.createRuleEditForm(domain, rule));
+    }
 
-      const restoreBtn = item.querySelector('.restore-btn');
-      restoreBtn.addEventListener('click', () => this.toggleBlock(domain));
-
-      fragment.appendChild(item);
+    const editBtn = item.querySelector('.edit-btn');
+    editBtn.addEventListener('click', () => {
+      if (this.editingRuleDomain === domain) {
+        this.editingRuleDomain = null;
+      } else {
+        this.editingRuleDomain = domain;
+      }
+      this.renderRulesList();
     });
 
-    // 既存のアイテムを削除して新しいものを追加
-    const existingItems = blockedList.querySelectorAll('.domain-item');
-    existingItems.forEach(item => item.remove());
-    blockedList.appendChild(fragment);
+    const deleteBtn = item.querySelector('.delete-btn');
+    deleteBtn.addEventListener('click', () => this.deleteRule(domain));
+
+    return item;
   }
 
-  renderIgnoredList() {
-    const ignoredList = document.getElementById('ignoredList');
-    const emptyState = document.getElementById('ignoredEmptyState');
-    const ignoredDomains = this.domainData.ignored_domains || [];
+  createRuleEditForm(domain, rule) {
+    const form = document.createElement('div');
+    form.className = 'rule-edit-form';
 
-    // フィルタリング
-    let filteredDomains = ignoredDomains;
-    if (this.searchQuery) {
-      filteredDomains = ignoredDomains.filter(domain =>
-        domain.toLowerCase().includes(this.searchQuery)
-      );
-    }
+    const currentTags = [...(rule.tags || [])];
 
-    // 件数表示を更新
-    document.getElementById('ignoredListCount').textContent = filteredDomains.length;
-
-    // 一括解除ボタンの状態
-    const bulkUnignoreBtn = document.getElementById('bulkUnignoreBtn');
-    bulkUnignoreBtn.disabled = ignoredDomains.length === 0;
-
-    // 空状態の表示切替
-    if (filteredDomains.length === 0) {
-      emptyState.style.display = 'flex';
-      const items = ignoredList.querySelectorAll('.domain-item');
-      items.forEach(item => item.remove());
-      return;
-    }
-
-    emptyState.style.display = 'none';
-
-    // リストを構築
-    const fragment = document.createDocumentFragment();
-
-    filteredDomains.forEach(domain => {
-      const item = document.createElement('div');
-      item.className = 'domain-item ignored';
-      item.innerHTML = `
-        <div class="domain-info">
-          <div class="domain-name" title="${domain}">${domain}</div>
-          <div class="domain-meta">
-            <span class="request-count" style="color: var(--warning);">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
-                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
-                <line x1="1" y1="1" x2="23" y2="23"/>
-              </svg>
-              スルー中
-            </span>
-          </div>
+    form.innerHTML = `
+      <div class="rule-edit-row">
+        <span class="rule-edit-label">アクション</span>
+        <select class="rule-action-select">
+          <option value="block"${rule.action === 'block' ? ' selected' : ''}>ブロック</option>
+          <option value="allow"${rule.action === 'allow' ? ' selected' : ''}>許可</option>
+        </select>
+      </div>
+      <div class="rule-edit-row">
+        <span class="rule-edit-label">メモ</span>
+        <input type="text" class="rule-memo-input" value="${this.escapeHtml(rule.memo || '')}" placeholder="メモを入力...">
+      </div>
+      <div class="rule-edit-row">
+        <span class="rule-edit-label">タグ</span>
+        <div class="rule-tags-editor">
+          ${currentTags.map(t => `<span class="rule-tag-chip" data-tag="${this.escapeHtml(t)}">${this.escapeHtml(t)} <span class="tag-remove">&times;</span></span>`).join('')}
+          <input type="text" class="rule-tag-input" placeholder="タグを入力してEnter">
         </div>
-        <button class="restore-btn" title="監視を再開">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-            <circle cx="12" cy="12" r="3"/>
-          </svg>
-        </button>
-      `;
+      </div>
+      <div class="rule-edit-buttons">
+        <button class="rule-edit-btn cancel">キャンセル</button>
+        <button class="rule-edit-btn save">保存</button>
+      </div>
+    `;
 
-      const restoreBtn = item.querySelector('.restore-btn');
-      restoreBtn.addEventListener('click', () => this.unignoreDomain(domain));
-
-      fragment.appendChild(item);
+    // タグ削除
+    form.querySelectorAll('.tag-remove').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const chip = e.target.closest('.rule-tag-chip');
+        const tag = chip.dataset.tag;
+        const idx = currentTags.indexOf(tag);
+        if (idx >= 0) currentTags.splice(idx, 1);
+        chip.remove();
+      });
     });
 
-    // 既存のアイテムを削除して新しいものを追加
-    const existingItems = ignoredList.querySelectorAll('.domain-item');
-    existingItems.forEach(item => item.remove());
-    ignoredList.appendChild(fragment);
+    // タグ追加（Enter）
+    const tagInput = form.querySelector('.rule-tag-input');
+    tagInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const value = tagInput.value.trim();
+        if (value && !currentTags.includes(value)) {
+          currentTags.push(value);
+          const chip = document.createElement('span');
+          chip.className = 'rule-tag-chip';
+          chip.dataset.tag = value;
+          chip.innerHTML = `${this.escapeHtml(value)} <span class="tag-remove">&times;</span>`;
+          chip.querySelector('.tag-remove').addEventListener('click', () => {
+            const idx = currentTags.indexOf(value);
+            if (idx >= 0) currentTags.splice(idx, 1);
+            chip.remove();
+          });
+          tagInput.before(chip);
+        }
+        tagInput.value = '';
+      }
+    });
+
+    // タグエディタクリックでフォーカス
+    const tagsEditor = form.querySelector('.rule-tags-editor');
+    tagsEditor.addEventListener('click', () => tagInput.focus());
+
+    // キャンセル
+    form.querySelector('.cancel').addEventListener('click', () => {
+      this.editingRuleDomain = null;
+      this.renderRulesList();
+    });
+
+    // 保存
+    form.querySelector('.save').addEventListener('click', async () => {
+      const newAction = form.querySelector('.rule-action-select').value;
+      const newMemo = form.querySelector('.rule-memo-input').value.trim();
+
+      // アクション変更
+      if (newAction !== rule.action) {
+        await chrome.runtime.sendMessage({
+          type: 'SET_RULE_ACTION',
+          domain,
+          action: newAction
+        });
+      }
+
+      // メタデータ更新
+      const response = await chrome.runtime.sendMessage({
+        type: 'UPDATE_RULE_META',
+        domain,
+        memo: newMemo,
+        tags: currentTags
+      });
+
+      if (response.success) {
+        this.domainRules = response.domain_rules;
+      }
+
+      this.editingRuleDomain = null;
+      // データ再読み込みで全体を同期
+      await this.loadData();
+    });
+
+    return form;
   }
 
-  renderAllowedList() {
-    const allowedList = document.getElementById('allowedList');
-    const emptyState = document.getElementById('allowedEmptyState');
-    const allowedDomains = this.domainData.allowed_domains || [];
+  // ルール追加フォームを表示
+  showAddRuleForm() {
+    this.showingAddForm = !this.showingAddForm;
+    this.renderRulesList();
+  }
 
-    // フィルタリング
-    let filteredDomains = allowedDomains;
-    if (this.searchQuery) {
-      filteredDomains = allowedDomains.filter(domain =>
-        domain.toLowerCase().includes(this.searchQuery)
-      );
-    }
+  createAddRuleFormElement() {
+    const form = document.createElement('div');
+    form.className = 'add-rule-form';
 
-    // 件数表示を更新
-    document.getElementById('allowedListCount').textContent = filteredDomains.length;
+    const addTags = [];
 
-    // 一括解除ボタンの状態
-    const bulkDisallowBtn = document.getElementById('bulkDisallowBtn');
-    bulkDisallowBtn.disabled = allowedDomains.length === 0;
-
-    // 空状態の表示切替
-    if (filteredDomains.length === 0) {
-      emptyState.style.display = 'flex';
-      const items = allowedList.querySelectorAll('.domain-item');
-      items.forEach(item => item.remove());
-      return;
-    }
-
-    emptyState.style.display = 'none';
-
-    // リストを構築
-    const fragment = document.createDocumentFragment();
-
-    filteredDomains.forEach(domain => {
-      const isMain = domain === this.domainData.main_domain;
-      const item = document.createElement('div');
-      item.className = 'domain-item allowed';
-      item.innerHTML = `
-        <div class="domain-info">
-          <div class="domain-header">
-            <div class="domain-name" title="${domain}">${domain}</div>
-            ${isMain ? '<span class="domain-tag tag-main">メイン</span>' : ''}
-          </div>
-          <div class="domain-meta">
-            <span class="request-count" style="color: var(--success);">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/>
-                <path d="M9 12l2 2 4-4"/>
-              </svg>
-              許可中
-            </span>
-          </div>
+    form.innerHTML = `
+      <div class="rule-edit-row">
+        <span class="rule-edit-label">ドメイン</span>
+        <input type="text" class="add-rule-domain" placeholder="example.com">
+      </div>
+      <div class="rule-edit-row">
+        <span class="rule-edit-label">アクション</span>
+        <select class="rule-action-select">
+          <option value="block">ブロック</option>
+          <option value="allow">許可</option>
+        </select>
+      </div>
+      <div class="rule-edit-row">
+        <span class="rule-edit-label">メモ</span>
+        <input type="text" class="rule-memo-input" placeholder="メモを入力...">
+      </div>
+      <div class="rule-edit-row">
+        <span class="rule-edit-label">タグ</span>
+        <div class="rule-tags-editor">
+          <input type="text" class="rule-tag-input" placeholder="タグを入力してEnter">
         </div>
-        <div class="domain-actions">
-          <button class="edit-btn" title="ドメインを編集">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-            </svg>
-          </button>
-          <button class="restore-btn disallow-btn" title="許可を解除">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
-            </svg>
-          </button>
-        </div>
-      `;
+      </div>
+      <div class="rule-edit-buttons">
+        <button class="rule-edit-btn cancel">キャンセル</button>
+        <button class="rule-edit-btn save">追加</button>
+      </div>
+    `;
 
-      const editBtn = item.querySelector('.edit-btn');
-      editBtn.addEventListener('click', () => this.editAllowedDomain(domain));
-
-      const restoreBtn = item.querySelector('.restore-btn');
-      restoreBtn.addEventListener('click', () => this.disallowDomain(domain));
-
-      fragment.appendChild(item);
+    const tagInput = form.querySelector('.rule-tag-input');
+    tagInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const value = tagInput.value.trim();
+        if (value && !addTags.includes(value)) {
+          addTags.push(value);
+          const chip = document.createElement('span');
+          chip.className = 'rule-tag-chip';
+          chip.dataset.tag = value;
+          chip.innerHTML = `${this.escapeHtml(value)} <span class="tag-remove">&times;</span>`;
+          chip.querySelector('.tag-remove').addEventListener('click', () => {
+            const idx = addTags.indexOf(value);
+            if (idx >= 0) addTags.splice(idx, 1);
+            chip.remove();
+          });
+          tagInput.before(chip);
+        }
+        tagInput.value = '';
+      }
     });
 
-    // 既存のアイテムを削除して新しいものを追加
-    const existingItems = allowedList.querySelectorAll('.domain-item');
-    existingItems.forEach(item => item.remove());
-    allowedList.appendChild(fragment);
+    const tagsEditor = form.querySelector('.rule-tags-editor');
+    tagsEditor.addEventListener('click', () => tagInput.focus());
+
+    form.querySelector('.cancel').addEventListener('click', () => {
+      this.showingAddForm = false;
+      this.renderRulesList();
+    });
+
+    form.querySelector('.save').addEventListener('click', async () => {
+      const domainInput = form.querySelector('.add-rule-domain');
+      const domain = domainInput.value.trim();
+
+      if (!domain) {
+        domainInput.focus();
+        return;
+      }
+
+      // 簡易バリデーション
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$/.test(domain)) {
+        alert('無効なドメイン形式です');
+        return;
+      }
+
+      const action = form.querySelector('.rule-action-select').value;
+      const memo = form.querySelector('.rule-memo-input').value.trim();
+
+      const response = await chrome.runtime.sendMessage({
+        type: 'ADD_RULE',
+        domain,
+        action,
+        memo,
+        tags: addTags
+      });
+
+      if (response.success) {
+        this.domainData.blocked_domains = response.blocked_domains;
+        this.domainData.allowed_domains = response.allowed_domains;
+        this.domainRules = response.domain_rules;
+        this.showingAddForm = false;
+        this.render();
+      }
+    });
+
+    return form;
+  }
+
+  insertAddRuleForm(rulesList, emptyState) {
+    const form = this.createAddRuleFormElement();
+    rulesList.insertBefore(form, emptyState);
+  }
+
+  // ルール削除
+  async deleteRule(domain) {
+    const confirmed = confirm(`"${domain}" のルールを削除しますか？`);
+    if (!confirmed) return;
+
+    const response = await chrome.runtime.sendMessage({
+      type: 'DELETE_RULE',
+      domain
+    });
+
+    if (response.success) {
+      this.domainData.blocked_domains = response.blocked_domains;
+      this.domainData.allowed_domains = response.allowed_domains;
+      this.domainRules = response.domain_rules;
+      this.render();
+    }
+  }
+
+  // 全ルール削除
+  async deleteAllRules() {
+    const count = Object.keys(this.domainRules).length;
+    if (count === 0) return;
+
+    const confirmed = confirm(`${count}件のルールをすべて削除しますか？`);
+    if (!confirmed) return;
+
+    const domains = Object.keys(this.domainRules);
+    for (const domain of domains) {
+      await chrome.runtime.sendMessage({
+        type: 'DELETE_RULE',
+        domain
+      });
+    }
+
+    await this.loadData();
   }
 }
 

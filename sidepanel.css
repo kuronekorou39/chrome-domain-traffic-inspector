@@ -394,60 +394,8 @@ body {
   flex-shrink: 0;
 }
 
-/* Filter Controls */
-.filter-controls {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.filter-label {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.filter-btn {
-  padding: 4px 8px;
-  font-size: 11px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all var(--transition);
-}
-
-.filter-btn:hover {
-  background: var(--bg-tertiary);
-}
-
-.filter-btn.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: white;
-}
-
-.filter-btn[data-filter="passing"].active {
-  background: var(--success);
-  border-color: var(--success);
-}
-
-.filter-btn[data-filter="blocked"].active {
-  background: var(--danger);
-  border-color: var(--danger);
-}
-
-.filter-btn[data-filter="ad"].active {
-  background: var(--warning);
-  border-color: var(--warning);
-}
-
-.filter-btn[data-filter="3p"].active {
-  background: #8b5cf6;
-  border-color: #8b5cf6;
-}
-
-/* Sort Controls */
+/* Filter & Sort Controls */
+.filter-controls,
 .sort-controls {
   display: flex;
   align-items: center;
@@ -455,30 +403,34 @@ body {
   flex-shrink: 0;
 }
 
-.sort-label {
+.select-label {
   font-size: 11px;
   color: var(--text-muted);
+  white-space: nowrap;
 }
 
-.sort-btn {
-  padding: 4px 10px;
+.filter-select,
+.sort-select {
+  padding: 4px 6px;
   font-size: 11px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   background: var(--bg-secondary);
-  color: var(--text-secondary);
+  color: var(--text-primary);
   cursor: pointer;
   transition: all var(--transition);
+  outline: none;
 }
 
-.sort-btn:hover {
-  background: var(--bg-tertiary);
-}
-
-.sort-btn.active {
-  background: var(--accent);
+.filter-select:hover,
+.sort-select:hover {
   border-color: var(--accent);
-  color: white;
+}
+
+.filter-select:focus,
+.sort-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
 }
 
 /* Bulk Actions */
@@ -533,16 +485,6 @@ body {
   cursor: not-allowed;
 }
 
-.bulk-ignore {
-  background: rgba(245, 158, 11, 0.15);
-  color: var(--warning);
-}
-
-.bulk-ignore:hover:not(:disabled) {
-  background: var(--warning);
-  color: white;
-}
-
 .bulk-block {
   background: rgba(239, 68, 68, 0.15);
   color: var(--danger);
@@ -561,39 +503,6 @@ body {
 .bulk-unblock:hover:not(:disabled) {
   background: var(--success);
   color: white;
-}
-
-.bulk-unignore {
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--accent);
-}
-
-.bulk-unignore:hover:not(:disabled) {
-  background: var(--accent);
-  color: white;
-}
-
-.bulk-consolidate {
-  background: rgba(139, 92, 246, 0.15);
-  color: #8b5cf6;
-}
-
-.bulk-consolidate:hover:not(:disabled) {
-  background: #8b5cf6;
-  color: white;
-}
-
-/* Bulk Unblock Bar (in panels) */
-.bulk-unblock-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 12px;
-  margin: 8px 16px;
-  background: var(--bg-tertiary);
-  border-radius: var(--radius-md);
-  flex-shrink: 0;
 }
 
 /* Domain List */
@@ -803,32 +712,6 @@ body {
   height: 14px;
 }
 
-/* Ignore Button */
-.ignore-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: var(--bg-tertiary);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all var(--transition);
-  flex-shrink: 0;
-}
-
-.ignore-btn:hover {
-  background: var(--warning);
-  color: white;
-}
-
-.ignore-btn svg {
-  width: 14px;
-  height: 14px;
-}
-
 /* Domain Actions */
 .domain-actions {
   display: flex;
@@ -862,7 +745,7 @@ body {
   height: 14px;
 }
 
-/* Restore Button (for ignored domains) */
+/* Restore Button */
 .restore-btn {
   display: flex;
   align-items: center;
@@ -885,16 +768,6 @@ body {
 .restore-btn svg {
   width: 14px;
   height: 14px;
-}
-
-/* Ignored domain item */
-.domain-item.ignored {
-  background: rgba(245, 158, 11, 0.08);
-  border-color: rgba(245, 158, 11, 0.3);
-}
-
-.domain-item.ignored .domain-name {
-  color: var(--text-muted);
 }
 
 /* Empty State */
@@ -1120,4 +993,445 @@ body {
 .bulk-disallow:hover:not(:disabled) {
   background: var(--danger);
   color: white;
+}
+
+/* ========================================
+   Rules Tab Styles
+   ======================================== */
+
+/* Rules Toolbar */
+.rules-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  margin: 8px 16px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  flex-shrink: 0;
+}
+
+.rules-toolbar-info {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.rules-toolbar-info span {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.rules-toolbar-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.rules-toolbar-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.rules-toolbar-btn:hover {
+  background: var(--accent);
+  color: white;
+}
+
+.rules-toolbar-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+.rules-toolbar-btn-danger {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+}
+
+.rules-toolbar-btn-danger:hover {
+  background: var(--danger);
+  color: white;
+}
+
+/* Rules Accordion Group */
+.rules-group {
+  margin-bottom: 8px;
+}
+
+.rules-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition);
+  user-select: none;
+}
+
+.rules-group-header:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--text-muted);
+}
+
+.rules-group-header .chevron {
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+  transition: transform var(--transition);
+  flex-shrink: 0;
+}
+
+.rules-group.expanded .rules-group-header .chevron {
+  transform: rotate(90deg);
+}
+
+.rules-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.rules-group-count {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 1px 6px;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+}
+
+.rules-group-body {
+  display: none;
+  padding: 4px 0 0 0;
+}
+
+.rules-group.expanded .rules-group-body {
+  display: block;
+}
+
+/* Rule Item */
+.rule-item {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px;
+  margin-bottom: 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  border-left: 3px solid var(--text-muted);
+  transition: all var(--transition);
+}
+
+.rule-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.rule-item.block {
+  border-left-color: var(--danger);
+}
+
+.rule-item.allow {
+  border-left-color: var(--success);
+}
+
+.rule-item-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rule-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.rule-item-domain {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rule-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.rule-action-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 600;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.rule-action-badge.block {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+}
+
+.rule-action-badge.allow {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--success);
+}
+
+.rule-item-memo {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rule-item-tags {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+
+.rule-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 500;
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--accent);
+  border-radius: 3px;
+}
+
+.rule-item-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.rule-item-actions .edit-btn,
+.rule-item-actions .delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+
+.rule-item-actions .edit-btn:hover {
+  background: var(--accent);
+  color: white;
+}
+
+.rule-item-actions .delete-btn:hover {
+  background: var(--danger);
+  color: white;
+}
+
+.rule-item-actions .edit-btn svg,
+.rule-item-actions .delete-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* Rule Edit Form (inline) */
+.rule-edit-form {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rule-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rule-edit-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  min-width: 50px;
+  flex-shrink: 0;
+}
+
+.rule-memo-input {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color var(--transition);
+}
+
+.rule-memo-input:focus {
+  border-color: var(--accent);
+}
+
+.rule-action-select {
+  padding: 5px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  outline: none;
+}
+
+.rule-action-select:focus {
+  border-color: var(--accent);
+}
+
+/* Tags Editor */
+.rule-tags-editor {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  padding: 4px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  min-height: 30px;
+  cursor: text;
+}
+
+.rule-tags-editor:focus-within {
+  border-color: var(--accent);
+}
+
+.rule-tags-editor .rule-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent);
+  border-radius: 3px;
+}
+
+.rule-tag-chip .tag-remove {
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.6;
+  transition: opacity var(--transition);
+}
+
+.rule-tag-chip .tag-remove:hover {
+  opacity: 1;
+}
+
+.rule-tag-input {
+  flex: 1;
+  min-width: 60px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 11px;
+  outline: none;
+  padding: 2px 0;
+}
+
+.rule-tag-input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Edit Form Buttons */
+.rule-edit-buttons {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.rule-edit-btn {
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 500;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.rule-edit-btn.save {
+  background: var(--accent);
+  color: white;
+}
+
+.rule-edit-btn.save:hover {
+  background: var(--accent-hover);
+}
+
+.rule-edit-btn.cancel {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.rule-edit-btn.cancel:hover {
+  background: var(--bg-hover);
+}
+
+/* Add Rule Dialog (inline) */
+.add-rule-form {
+  padding: 12px;
+  margin-bottom: 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.add-rule-form .rule-edit-row input[type="text"] {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.add-rule-form .rule-edit-row input[type="text"]:focus {
+  border-color: var(--accent);
 }
