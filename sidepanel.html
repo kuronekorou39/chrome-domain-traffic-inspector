@@ -127,23 +127,74 @@
       </div>
 
       <div class="tab-panel" id="rulesPanel">
-        <div class="rules-toolbar">
-          <span class="rules-toolbar-info"><span id="rulesCount">0</span>件のルール</span>
-          <div class="rules-toolbar-actions">
-            <button id="addRuleBtn" class="rules-toolbar-btn" title="ルールを追加">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="10"/>
-                <line x1="12" y1="8" x2="12" y2="16"/>
-                <line x1="8" y1="12" x2="16" y2="12"/>
-              </svg>
-              追加
-            </button>
-            <button id="deleteAllRulesBtn" class="rules-toolbar-btn rules-toolbar-btn-danger" title="すべてのルールを削除">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-              </svg>
-              すべて削除
-            </button>
+        <div class="rules-toolbar" id="rulesToolbar">
+          <div class="rules-toolbar-normal">
+            <span class="rules-toolbar-info"><span id="rulesCount">0</span>件</span>
+            <div class="rules-toolbar-actions">
+              <button id="addRuleBtn" class="rules-toolbar-btn" title="ルールを追加">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="12" y1="8" x2="12" y2="16"/>
+                  <line x1="8" y1="12" x2="16" y2="12"/>
+                </svg>
+                追加
+              </button>
+              <button id="exportRulesBtn" class="rules-toolbar-btn" title="JSONエクスポート">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                出力
+              </button>
+              <button id="importRulesBtn" class="rules-toolbar-btn" title="JSONインポート">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                入力
+              </button>
+              <button id="deleteAllRulesBtn" class="rules-toolbar-btn rules-toolbar-btn-danger" title="すべてのルールを削除">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                </svg>
+                全削除
+              </button>
+            </div>
+          </div>
+          <div class="rules-toolbar-select" style="display:none">
+            <span class="rules-toolbar-info"><span id="selectedCount">0</span>件選択</span>
+            <div class="rules-toolbar-actions">
+              <button id="bulkTagBtn" class="rules-toolbar-btn" title="選択中にタグを追加">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/>
+                  <line x1="7" y1="7" x2="7.01" y2="7"/>
+                </svg>
+                タグ
+              </button>
+              <button id="exportSelectedBtn" class="rules-toolbar-btn" title="選択中をエクスポート">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                出力
+              </button>
+              <button id="bulkDeleteBtn" class="rules-toolbar-btn rules-toolbar-btn-danger" title="選択中を削除">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                </svg>
+                削除
+              </button>
+              <button id="clearSelectionBtn" class="rules-toolbar-btn" title="選択を解除">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/>
+                  <line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+                解除
+              </button>
+            </div>
           </div>
         </div>
         <div class="domain-list-container">
@@ -160,6 +211,7 @@
         </div>
       </div>
     </div>
+    <input type="file" id="importFileInput" accept=".json" style="display:none">
   </div>
 
   <script src="sidepanel.js"></script>

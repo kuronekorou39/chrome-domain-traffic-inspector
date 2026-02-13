@@ -1043,9 +1043,14 @@ body {
   transition: all var(--transition);
 }
 
-.rules-toolbar-btn:hover {
+.rules-toolbar-btn:hover:not(:disabled) {
   background: var(--accent);
   color: white;
+}
+
+.rules-toolbar-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .rules-toolbar-btn svg {
@@ -1062,6 +1067,7 @@ body {
   background: var(--danger);
   color: white;
 }
+
 
 /* Rules Accordion Group */
 .rules-group {
@@ -1434,4 +1440,49 @@ body {
 
 .add-rule-form .rule-edit-row input[type="text"]:focus {
   border-color: var(--accent);
+}
+
+/* ========================================
+   Rules Multi-Select Styles
+   ======================================== */
+
+/* Rules Toolbar Normal/Select modes */
+.rules-toolbar-normal,
+.rules-toolbar-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+/* Selection mode toolbar highlight */
+.rules-toolbar.select-mode {
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+/* Rule item checkbox */
+.rule-item-checkbox {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* Group header checkbox */
+.rules-group-checkbox {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* Checked rule item highlight */
+.rule-item.selected {
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.3);
 }

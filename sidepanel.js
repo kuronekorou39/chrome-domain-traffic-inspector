@@ -47,6 +47,7 @@ class DomainTrafficInspector {
     this.trafficFilter = 'all';
     this.editingRuleDomain = null;
     this.showingAddForm = false;
+    this.selectedRules = new Set();
 
     this.init();
   }
@@ -159,6 +160,22 @@ class DomainTrafficInspector {
     // ルールタブ: 全削除ボタン
     const deleteAllRulesBtn = document.getElementById('deleteAllRulesBtn');
     deleteAllRulesBtn.addEventListener('click', () => this.deleteAllRules());
+
+    // ルールタブ: エクスポート/インポート
+    document.getElementById('exportRulesBtn').addEventListener('click', () => this.exportRules(false));
+    document.getElementById('importRulesBtn').addEventListener('click', () => this.importRules());
+    document.getElementById('importFileInput').addEventListener('change', (e) => {
+      if (e.target.files[0]) {
+        this.handleImportFile(e.target.files[0]);
+        e.target.value = '';
+      }
+    });
+
+    // ルールタブ: 選択モードボタン
+    document.getElementById('bulkTagBtn').addEventListener('click', () => this.bulkTagRules());
+    document.getElementById('exportSelectedBtn').addEventListener('click', () => this.exportRules(true));
+    document.getElementById('bulkDeleteBtn').addEventListener('click', () => this.bulkDeleteRules());
+    document.getElementById('clearSelectionBtn').addEventListener('click', () => this.clearSelection());
   }
 
   updateTabPanels() {
@@ -407,9 +424,13 @@ class DomainTrafficInspector {
     this.updateBlockingUI();
     this.updateModeUI();
     this.renderTrafficList(oldCounts);
-    this.renderRulesList();
+    // 編集中・追加フォーム表示中はルールリストの再描画をスキップ（入力が消えるのを防止）
+    if (!this.editingRuleDomain && !this.showingAddForm) {
+      this.renderRulesList();
+    }
     this.updateStats();
     this.updateBulkActions();
+    this.updateRulesToolbar();
     this.updateTabCounts();
   }
 
@@ -777,9 +798,14 @@ class DomainTrafficInspector {
       group.classList.add('expanded');
     }
 
+    // グループ内のドメイン一覧（重複除去済み）
+    const groupDomains = [...new Set(items.map(i => i.domain))];
+    const allChecked = groupDomains.length > 0 && groupDomains.every(d => this.selectedRules.has(d));
+
     const header = document.createElement('div');
     header.className = 'rules-group-header';
     header.innerHTML = `
+      <input type="checkbox" class="rules-group-checkbox" ${allChecked ? 'checked' : ''}>
       <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="9 18 15 12 9 6"/>
       </svg>
@@ -787,7 +813,33 @@ class DomainTrafficInspector {
       <span class="rules-group-count">${items.length}</span>
     `;
 
-    header.addEventListener('click', () => {
+    // グループチェックボックスイベント
+    const groupCheckbox = header.querySelector('.rules-group-checkbox');
+    groupCheckbox.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+    groupCheckbox.addEventListener('change', (e) => {
+      const checked = e.target.checked;
+      groupDomains.forEach(domain => {
+        if (checked) {
+          this.selectedRules.add(domain);
+        } else {
+          this.selectedRules.delete(domain);
+        }
+      });
+      // グループ内のアイテムチェックボックスを同期
+      group.querySelectorAll('.rule-item-checkbox').forEach(cb => {
+        cb.checked = checked;
+        const ruleItem = cb.closest('.rule-item');
+        if (ruleItem) {
+          ruleItem.classList.toggle('selected', checked);
+        }
+      });
+      this.updateRulesToolbar();
+    });
+
+    header.addEventListener('click', (e) => {
+      if (e.target.closest('.rules-group-checkbox')) return;
       if (this.expandedTags.has(tag)) {
         this.expandedTags.delete(tag);
       } else {
@@ -823,6 +875,10 @@ class DomainTrafficInspector {
     item.className = `rule-item ${rule.action}`;
     item.dataset.domain = domain;
 
+    if (this.selectedRules.has(domain)) {
+      item.classList.add('selected');
+    }
+
     const tagsHtml = (rule.tags || [])
       .map(t => `<span class="rule-tag-chip">${this.escapeHtml(t)}</span>`)
       .join('');
@@ -833,6 +889,7 @@ class DomainTrafficInspector {
 
     item.innerHTML = `
       <div class="rule-item-row">
+        <input type="checkbox" class="rule-item-checkbox" ${this.selectedRules.has(domain) ? 'checked' : ''}>
         <div class="rule-item-info">
           <div class="rule-item-domain" title="${this.escapeHtml(domain)}">${this.escapeHtml(domain)}</div>
           <div class="rule-item-meta">
@@ -856,6 +913,19 @@ class DomainTrafficInspector {
         </div>
       </div>
     `;
+
+    // チェックボックスイベント
+    const checkbox = item.querySelector('.rule-item-checkbox');
+    checkbox.addEventListener('change', (e) => {
+      if (e.target.checked) {
+        this.selectedRules.add(domain);
+        item.classList.add('selected');
+      } else {
+        this.selectedRules.delete(domain);
+        item.classList.remove('selected');
+      }
+      this.updateRulesToolbar();
+    });
 
     // 編集中ならフォームを表示
     if (this.editingRuleDomain === domain) {
@@ -1135,6 +1205,181 @@ class DomainTrafficInspector {
     }
 
     await this.loadData();
+  }
+
+  // ルールツールバーを更新（通常/選択モード切り替え）
+  updateRulesToolbar() {
+    const toolbar = document.getElementById('rulesToolbar');
+    const normalSection = toolbar.querySelector('.rules-toolbar-normal');
+    const selectSection = toolbar.querySelector('.rules-toolbar-select');
+    const selectedCount = document.getElementById('selectedCount');
+
+    // 削除済みドメインを selectedRules から除外
+    for (const domain of this.selectedRules) {
+      if (!this.domainRules[domain]) {
+        this.selectedRules.delete(domain);
+      }
+    }
+
+    const rulesTotal = Object.keys(this.domainRules).length;
+    const exportRulesBtn = document.getElementById('exportRulesBtn');
+    exportRulesBtn.disabled = rulesTotal === 0;
+
+    if (this.selectedRules.size > 0) {
+      normalSection.style.display = 'none';
+      selectSection.style.display = 'flex';
+      toolbar.classList.add('select-mode');
+      selectedCount.textContent = this.selectedRules.size;
+    } else {
+      normalSection.style.display = 'flex';
+      selectSection.style.display = 'none';
+      toolbar.classList.remove('select-mode');
+    }
+  }
+
+  // 一括タグ付け
+  async bulkTagRules() {
+    if (this.selectedRules.size === 0) return;
+
+    const tagName = prompt(`${this.selectedRules.size}件のドメインに追加するタグ名を入力:`);
+    if (!tagName || !tagName.trim()) return;
+
+    const domains = Array.from(this.selectedRules);
+    const response = await chrome.runtime.sendMessage({
+      type: 'BULK_UPDATE_TAGS',
+      domains,
+      addTags: [tagName.trim()]
+    });
+
+    if (response.success) {
+      this.domainRules = response.domain_rules;
+      this.selectedRules.clear();
+      this.render();
+    }
+  }
+
+  // 一括削除
+  async bulkDeleteRules() {
+    if (this.selectedRules.size === 0) return;
+
+    const confirmed = confirm(`${this.selectedRules.size}件のルールを削除しますか？`);
+    if (!confirmed) return;
+
+    const domains = Array.from(this.selectedRules);
+    const response = await chrome.runtime.sendMessage({
+      type: 'BULK_DELETE_RULES',
+      domains
+    });
+
+    if (response.success) {
+      this.domainData.blocked_domains = response.blocked_domains;
+      this.domainData.allowed_domains = response.allowed_domains;
+      this.domainRules = response.domain_rules;
+      this.selectedRules.clear();
+      this.render();
+    }
+  }
+
+  // エクスポート
+  exportRules(selectedOnly) {
+    const rules = this.domainRules;
+    let exportData;
+
+    if (selectedOnly && this.selectedRules.size > 0) {
+      const selectedRulesObj = {};
+      for (const domain of this.selectedRules) {
+        if (rules[domain]) {
+          selectedRulesObj[domain] = rules[domain];
+        }
+      }
+      exportData = selectedRulesObj;
+    } else {
+      exportData = rules;
+    }
+
+    if (Object.keys(exportData).length === 0) {
+      alert('エクスポートするルールがありません');
+      return;
+    }
+
+    const json = JSON.stringify({
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      rules: exportData
+    }, null, 2);
+
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const date = new Date().toISOString().slice(0, 10);
+    a.download = `domain-rules-${date}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // インポート（ファイル選択をトリガー）
+  importRules() {
+    document.getElementById('importFileInput').click();
+  }
+
+  // インポートファイル処理
+  async handleImportFile(file) {
+    try {
+      const text = await file.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        alert('JSONの解析に失敗しました。ファイル形式を確認してください。');
+        return;
+      }
+
+      // バリデーション
+      if (!data.version || !data.rules || typeof data.rules !== 'object') {
+        alert('無効なファイル形式です。version と rules プロパティが必要です。');
+        return;
+      }
+
+      const importDomains = Object.keys(data.rules);
+      if (importDomains.length === 0) {
+        alert('インポートするルールがありません。');
+        return;
+      }
+
+      // 重複チェック
+      const existingDomains = Object.keys(this.domainRules);
+      const duplicates = importDomains.filter(d => existingDomains.includes(d));
+
+      if (duplicates.length > 0) {
+        const confirmed = confirm(
+          `${importDomains.length}件中${duplicates.length}件が既に登録済みです。上書きしますか？`
+        );
+        if (!confirmed) return;
+      }
+
+      // IMPORT_RULES でバックグラウンドに送信
+      const response = await chrome.runtime.sendMessage({
+        type: 'IMPORT_RULES',
+        rules: data.rules
+      });
+
+      if (response.success) {
+        this.domainData.blocked_domains = response.blocked_domains;
+        this.domainData.allowed_domains = response.allowed_domains;
+        this.domainRules = response.domain_rules;
+        this.render();
+      }
+    } catch (error) {
+      alert('インポート中にエラーが発生しました: ' + error.message);
+    }
+  }
+
+  // 選択解除
+  clearSelection() {
+    this.selectedRules.clear();
+    this.renderRulesList();
+    this.updateRulesToolbar();
   }
 }
 

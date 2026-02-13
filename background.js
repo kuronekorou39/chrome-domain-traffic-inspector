@@ -779,6 +779,85 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // 一括タグ追加
+  if (message.type === 'BULK_UPDATE_TAGS') {
+    const { domains, addTags } = message;
+    (async () => {
+      await initialize();
+      for (const domain of domains) {
+        if (domainRules[domain]) {
+          const existing = domainRules[domain].tags || [];
+          addTags.forEach(tag => {
+            if (!existing.includes(tag)) {
+              existing.push(tag);
+            }
+          });
+          domainRules[domain].tags = existing;
+        }
+      }
+      await saveDomainRules();
+      sendResponse({ success: true, domain_rules: domainRules });
+    })();
+    return true;
+  }
+
+  // ルールインポート
+  if (message.type === 'IMPORT_RULES') {
+    const { rules } = message;
+    (async () => {
+      await initialize();
+      for (const [domain, rule] of Object.entries(rules)) {
+        if (rule.action === 'block') {
+          await blockDomain(domain);
+        } else if (rule.action === 'allow') {
+          await allowDomain(domain);
+        }
+        // memo/tags をセット
+        if (domainRules[domain]) {
+          if (rule.memo !== undefined) domainRules[domain].memo = rule.memo;
+          if (rule.tags !== undefined) domainRules[domain].tags = rule.tags;
+        }
+      }
+      await saveDomainRules();
+      const blockedDomains = await getBlockedDomains();
+      sendResponse({
+        success: true,
+        blocked_domains: blockedDomains,
+        allowed_domains: Array.from(allowedDomains),
+        domain_rules: domainRules
+      });
+    })();
+    return true;
+  }
+
+  // 一括ルール削除
+  if (message.type === 'BULK_DELETE_RULES') {
+    const { domains } = message;
+    (async () => {
+      await initialize();
+      for (const domain of domains) {
+        const rule = domainRules[domain];
+        if (rule) {
+          if (rule.action === 'block') {
+            await unblockDomain(domain);
+          } else if (rule.action === 'allow') {
+            await disallowDomain(domain);
+          }
+          delete domainRules[domain];
+        }
+      }
+      await saveDomainRules();
+      const blockedDomains = await getBlockedDomains();
+      sendResponse({
+        success: true,
+        blocked_domains: blockedDomains,
+        allowed_domains: Array.from(allowedDomains),
+        domain_rules: domainRules
+      });
+    })();
+    return true;
+  }
+
   // ルール追加
   if (message.type === 'ADD_RULE') {
     const { domain, action, memo, tags } = message;
