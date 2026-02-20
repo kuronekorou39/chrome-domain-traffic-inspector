@@ -505,6 +505,16 @@ body {
   color: white;
 }
 
+.bulk-clear {
+  background: rgba(100, 116, 139, 0.15);
+  color: var(--text-secondary);
+}
+
+.bulk-clear:hover:not(:disabled) {
+  background: var(--text-secondary);
+  color: white;
+}
+
 /* Domain List */
 .domain-list-container {
   flex: 1;

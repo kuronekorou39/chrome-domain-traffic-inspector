@@ -68,11 +68,6 @@
         </svg>
         <input type="text" id="searchInput" class="search-input" placeholder="ドメインを検索...">
       </div>
-      <button id="clearBtn" class="btn btn-secondary" title="カウントをリセット">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-        </svg>
-      </button>
     </div>
 
     <div class="tab-panels">
@@ -102,12 +97,19 @@
             <span id="visibleCount">0</span>件表示中
           </span>
           <div class="bulk-buttons">
-<button id="bulkBlockBtn" class="bulk-btn bulk-block" title="表示中をすべてブロック">
+            <button id="bulkBlockBtn" class="bulk-btn bulk-block" title="表示中をすべてブロック">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="10"/>
                 <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
               </svg>
               すべてブロック
+            </button>
+            <button id="clearBtn" class="bulk-btn bulk-clear" title="カウントをリセット">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="1 4 1 10 7 10"/>
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+              </svg>
+              リセット
             </button>
           </div>
         </div>
