@@ -1,0 +1,43 @@
+name: Build & Release Extension
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from manifest.json
+        id: version
+        run: |
+          VERSION=$(jq -r '.version' manifest.json)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build zip
+        run: |
+          zip -r extension.zip \
+            manifest.json \
+            background.js \
+            sidepanel.html \
+            sidepanel.css \
+            sidepanel.js \
+            icons/
+
+      - name: Update latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Latest Build (v${{ steps.version.outputs.version }})"
+          body: |
+            自動ビルド — `main` ブランチの最新版
+            バージョン: ${{ steps.version.outputs.version }}
+            コミット: ${{ github.sha }}
+          files: extension.zip
+          prerelease: false
+          make_latest: true
