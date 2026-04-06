@@ -1390,6 +1390,91 @@ body {
   color: var(--text-muted);
 }
 
+/* Tag Suggest Dropdown */
+.tag-suggest-dropdown {
+  display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 100;
+  max-height: 150px;
+  overflow-y: auto;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  margin-top: 2px;
+}
+
+.tag-suggest-item {
+  padding: 5px 10px;
+  font-size: 11px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.tag-suggest-item:hover {
+  background: var(--bg-hover);
+}
+
+/* Bulk Tag Dialog */
+.bulk-tag-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.bulk-tag-dialog {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 16px;
+  width: 280px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+.bulk-tag-dialog-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+
+.bulk-tag-input-wrap {
+  margin-bottom: 12px;
+}
+
+.bulk-tag-input-wrap .rule-tag-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 11px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.bulk-tag-input-wrap .rule-tag-input:focus {
+  border-color: var(--accent);
+}
+
+.bulk-tag-dialog-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 /* Edit Form Buttons */
 .rule-edit-buttons {
   display: flex;

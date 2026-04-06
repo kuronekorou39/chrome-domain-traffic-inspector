@@ -59,6 +59,57 @@ class DomainTrafficInspector {
     return div.innerHTML;
   }
 
+  // 全ルールから登録済みタグの一覧を取得
+  getAllExistingTags() {
+    const tagSet = new Set();
+    Object.values(this.domainRules).forEach(rule => {
+      if (rule.tags) rule.tags.forEach(t => tagSet.add(t));
+    });
+    return Array.from(tagSet).sort((a, b) => a.localeCompare(b));
+  }
+
+  // タグ入力にサジェストドロップダウンを設定する共通メソッド
+  setupTagSuggest(tagInput, currentTags, onAddTag) {
+    const dropdown = document.createElement('div');
+    dropdown.className = 'tag-suggest-dropdown';
+    tagInput.parentElement.style.position = 'relative';
+    tagInput.parentElement.appendChild(dropdown);
+
+    const updateSuggestions = () => {
+      const query = tagInput.value.trim().toLowerCase();
+      const existing = this.getAllExistingTags()
+        .filter(t => !currentTags.includes(t))
+        .filter(t => !query || t.toLowerCase().includes(query));
+
+      if (existing.length === 0) {
+        dropdown.style.display = 'none';
+        return;
+      }
+
+      dropdown.innerHTML = '';
+      existing.forEach(tag => {
+        const item = document.createElement('div');
+        item.className = 'tag-suggest-item';
+        item.textContent = tag;
+        item.addEventListener('mousedown', (e) => {
+          e.preventDefault(); // inputのblurを防止
+          onAddTag(tag);
+          tagInput.value = '';
+          dropdown.style.display = 'none';
+        });
+        dropdown.appendChild(item);
+      });
+      dropdown.style.display = 'block';
+    };
+
+    tagInput.addEventListener('focus', updateSuggestions);
+    tagInput.addEventListener('input', updateSuggestions);
+    tagInput.addEventListener('blur', () => {
+      // mousedownのpreventDefaultで選択を処理後に閉じる
+      setTimeout(() => { dropdown.style.display = 'none'; }, 150);
+    });
+  }
+
   // ドメインが広告/トラッキングの可能性があるか判定
   isLikelyAd(domain) {
     const lowerDomain = domain.toLowerCase();
@@ -786,9 +837,11 @@ class DomainTrafficInspector {
       fragment.appendChild(this.createRulesGroup('タグなし', noTag));
     }
 
-    // 既存をクリアして再描画
+    // スクロール位置を保存して再描画
+    const scrollTop = rulesList.scrollTop;
     rulesList.querySelectorAll('.rules-group, .add-rule-form').forEach(el => el.remove());
     rulesList.insertBefore(fragment, emptyState);
+    rulesList.scrollTop = scrollTop;
   }
 
   createRulesGroup(tag, items) {
@@ -970,7 +1023,7 @@ class DomainTrafficInspector {
         <span class="rule-edit-label">タグ</span>
         <div class="rule-tags-editor">
           ${currentTags.map(t => `<span class="rule-tag-chip" data-tag="${this.escapeHtml(t)}">${this.escapeHtml(t)} <span class="tag-remove">&times;</span></span>`).join('')}
-          <input type="text" class="rule-tag-input" placeholder="タグを入力してEnter">
+          <input type="text" class="rule-tag-input" placeholder="タグを入力または選択">
         </div>
       </div>
       <div class="rule-edit-buttons">
@@ -990,28 +1043,33 @@ class DomainTrafficInspector {
       });
     });
 
-    // タグ追加（Enter）
+    // タグ追加（Enter & サジェスト共通）
     const tagInput = form.querySelector('.rule-tag-input');
+    const addTagToForm = (value) => {
+      if (value && !currentTags.includes(value)) {
+        currentTags.push(value);
+        const chip = document.createElement('span');
+        chip.className = 'rule-tag-chip';
+        chip.dataset.tag = value;
+        chip.innerHTML = `${this.escapeHtml(value)} <span class="tag-remove">&times;</span>`;
+        chip.querySelector('.tag-remove').addEventListener('click', () => {
+          const idx = currentTags.indexOf(value);
+          if (idx >= 0) currentTags.splice(idx, 1);
+          chip.remove();
+        });
+        tagInput.before(chip);
+      }
+    };
+
     tagInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        const value = tagInput.value.trim();
-        if (value && !currentTags.includes(value)) {
-          currentTags.push(value);
-          const chip = document.createElement('span');
-          chip.className = 'rule-tag-chip';
-          chip.dataset.tag = value;
-          chip.innerHTML = `${this.escapeHtml(value)} <span class="tag-remove">&times;</span>`;
-          chip.querySelector('.tag-remove').addEventListener('click', () => {
-            const idx = currentTags.indexOf(value);
-            if (idx >= 0) currentTags.splice(idx, 1);
-            chip.remove();
-          });
-          tagInput.before(chip);
-        }
+        addTagToForm(tagInput.value.trim());
         tagInput.value = '';
       }
     });
+
+    this.setupTagSuggest(tagInput, currentTags, addTagToForm);
 
     // タグエディタクリックでフォーカス
     const tagsEditor = form.querySelector('.rule-tags-editor');
@@ -1088,7 +1146,7 @@ class DomainTrafficInspector {
       <div class="rule-edit-row">
         <span class="rule-edit-label">タグ</span>
         <div class="rule-tags-editor">
-          <input type="text" class="rule-tag-input" placeholder="タグを入力してEnter">
+          <input type="text" class="rule-tag-input" placeholder="タグを入力または選択">
         </div>
       </div>
       <div class="rule-edit-buttons">
@@ -1098,26 +1156,31 @@ class DomainTrafficInspector {
     `;
 
     const tagInput = form.querySelector('.rule-tag-input');
+    const addTagToForm = (value) => {
+      if (value && !addTags.includes(value)) {
+        addTags.push(value);
+        const chip = document.createElement('span');
+        chip.className = 'rule-tag-chip';
+        chip.dataset.tag = value;
+        chip.innerHTML = `${this.escapeHtml(value)} <span class="tag-remove">&times;</span>`;
+        chip.querySelector('.tag-remove').addEventListener('click', () => {
+          const idx = addTags.indexOf(value);
+          if (idx >= 0) addTags.splice(idx, 1);
+          chip.remove();
+        });
+        tagInput.before(chip);
+      }
+    };
+
     tagInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        const value = tagInput.value.trim();
-        if (value && !addTags.includes(value)) {
-          addTags.push(value);
-          const chip = document.createElement('span');
-          chip.className = 'rule-tag-chip';
-          chip.dataset.tag = value;
-          chip.innerHTML = `${this.escapeHtml(value)} <span class="tag-remove">&times;</span>`;
-          chip.querySelector('.tag-remove').addEventListener('click', () => {
-            const idx = addTags.indexOf(value);
-            if (idx >= 0) addTags.splice(idx, 1);
-            chip.remove();
-          });
-          tagInput.before(chip);
-        }
+        addTagToForm(tagInput.value.trim());
         tagInput.value = '';
       }
     });
+
+    this.setupTagSuggest(tagInput, addTags, addTagToForm);
 
     const tagsEditor = form.querySelector('.rule-tags-editor');
     tagsEditor.addEventListener('click', () => tagInput.focus());
@@ -1237,25 +1300,113 @@ class DomainTrafficInspector {
     }
   }
 
-  // 一括タグ付け
-  async bulkTagRules() {
+  // 一括タグ付けダイアログ
+  bulkTagRules() {
     if (this.selectedRules.size === 0) return;
 
-    const tagName = prompt(`${this.selectedRules.size}件のドメインに追加するタグ名を入力:`);
-    if (!tagName || !tagName.trim()) return;
+    // 既存のダイアログがあれば削除
+    const existing = document.querySelector('.bulk-tag-dialog-overlay');
+    if (existing) existing.remove();
 
-    const domains = Array.from(this.selectedRules);
-    const response = await chrome.runtime.sendMessage({
-      type: 'BULK_UPDATE_TAGS',
-      domains,
-      addTags: [tagName.trim()]
+    const overlay = document.createElement('div');
+    overlay.className = 'bulk-tag-dialog-overlay';
+
+    const dialog = document.createElement('div');
+    dialog.className = 'bulk-tag-dialog';
+    dialog.innerHTML = `
+      <div class="bulk-tag-dialog-title">${this.selectedRules.size}件のドメインにタグを追加</div>
+      <div class="bulk-tag-input-wrap">
+        <input type="text" class="rule-tag-input" placeholder="タグを入力またはリストから選択">
+      </div>
+      <div class="bulk-tag-dialog-buttons">
+        <button class="rule-edit-btn cancel">キャンセル</button>
+        <button class="rule-edit-btn save">追加</button>
+      </div>
+    `;
+
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    const tagInput = dialog.querySelector('.rule-tag-input');
+    const inputWrap = dialog.querySelector('.bulk-tag-input-wrap');
+    let selectedTag = '';
+
+    // サジェストドロップダウンを設定
+    const dropdown = document.createElement('div');
+    dropdown.className = 'tag-suggest-dropdown';
+    inputWrap.style.position = 'relative';
+    inputWrap.appendChild(dropdown);
+
+    const updateSuggestions = () => {
+      const query = tagInput.value.trim().toLowerCase();
+      const existingTags = this.getAllExistingTags();
+      const filtered = existingTags.filter(t => !query || t.toLowerCase().includes(query));
+
+      if (filtered.length === 0) {
+        dropdown.style.display = 'none';
+        return;
+      }
+
+      dropdown.innerHTML = '';
+      filtered.forEach(tag => {
+        const item = document.createElement('div');
+        item.className = 'tag-suggest-item';
+        item.textContent = tag;
+        item.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          tagInput.value = tag;
+          selectedTag = tag;
+          dropdown.style.display = 'none';
+        });
+        dropdown.appendChild(item);
+      });
+      dropdown.style.display = 'block';
+    };
+
+    tagInput.addEventListener('focus', updateSuggestions);
+    tagInput.addEventListener('input', () => {
+      selectedTag = '';
+      updateSuggestions();
+    });
+    tagInput.addEventListener('blur', () => {
+      setTimeout(() => { dropdown.style.display = 'none'; }, 150);
     });
 
-    if (response.success) {
-      this.domainRules = response.domain_rules;
-      this.selectedRules.clear();
-      this.render();
-    }
+    setTimeout(() => tagInput.focus(), 50);
+
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
+
+    dialog.querySelector('.cancel').addEventListener('click', () => overlay.remove());
+
+    dialog.querySelector('.save').addEventListener('click', async () => {
+      const tagName = tagInput.value.trim();
+      if (!tagName) return;
+
+      const domains = Array.from(this.selectedRules);
+      const response = await chrome.runtime.sendMessage({
+        type: 'BULK_UPDATE_TAGS',
+        domains,
+        addTags: [tagName]
+      });
+
+      if (response.success) {
+        this.domainRules = response.domain_rules;
+        this.selectedRules.clear();
+        this.render();
+      }
+      overlay.remove();
+    });
+
+    tagInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        dialog.querySelector('.save').click();
+      } else if (e.key === 'Escape') {
+        overlay.remove();
+      }
+    });
   }
 
   // 一括削除
