@@ -15,6 +15,9 @@ Thumbs.db
 *_cropped.png
 *_original.png
 
+# Node.js
+node_modules/
+
 # Packed extension
 *.zip
 *.crx

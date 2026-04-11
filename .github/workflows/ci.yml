@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18, 20]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate manifest.json
+        run: |
+          node -e "
+            const m = require('./manifest.json');
+            if (!m.manifest_version || !m.name || !m.version) {
+              console.error('Invalid manifest');
+              process.exit(1);
+            }
+            console.log('Manifest OK: ' + m.name + ' v' + m.version);
+          "
+
+      - name: Build zip
+        run: |
+          zip -r extension.zip \
+            manifest.json \
+            background.js \
+            sidepanel.html \
+            sidepanel.css \
+            sidepanel.js \
+            lib/ \
+            icons/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension
+          path: extension.zip

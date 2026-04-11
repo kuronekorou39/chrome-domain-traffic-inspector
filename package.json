@@ -1,0 +1,16 @@
+{
+  "name": "chrome-domain-traffic-inspector",
+  "version": "1.0.0",
+  "description": "Chrome extension for domain traffic monitoring and blocking",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "node scripts/lint.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "vitest": "^1.6.1"
+  }
+}

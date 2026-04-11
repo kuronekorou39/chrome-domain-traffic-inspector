@@ -1,4 +1,5 @@
 // Domain Traffic Inspector - Background Service Worker
+importScripts('lib/domain-utils.js');
 
 // タブごとのデータを管理
 const tabData = new Map();
@@ -317,15 +318,7 @@ async function updateStrictModeRule() {
 // 初期化を実行
 initialize();
 
-// URLからドメインを抽出
-function extractDomain(url) {
-  try {
-    const urlObj = new URL(url);
-    return urlObj.hostname;
-  } catch {
-    return null;
-  }
-}
+// extractDomain, getShortType は lib/domain-utils.js から提供
 
 // タブデータを初期化
 function initTabData(tabId) {
@@ -339,23 +332,6 @@ function initTabData(tabId) {
   return tabData.get(tabId);
 }
 
-// リソースタイプを短縮形に変換
-function getShortType(type) {
-  const typeMap = {
-    'script': 'JS',
-    'stylesheet': 'CSS',
-    'image': 'IMG',
-    'xmlhttprequest': 'XHR',
-    'font': 'FONT',
-    'media': 'MEDIA',
-    'sub_frame': 'FRAME',
-    'main_frame': 'DOC',
-    'ping': 'PING',
-    'websocket': 'WS',
-    'other': 'OTHER'
-  };
-  return typeMap[type] || 'OTHER';
-}
 
 // スロットリングされたサイドパネル更新
 function scheduleUpdate(tabId, data) {
