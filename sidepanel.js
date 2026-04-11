@@ -1,29 +1,55 @@
 // Domain Traffic Inspector - Side Panel Logic
 
-// 広告・トラッキング判定用キーワード
-const AD_KEYWORDS = [
+// 広告・トラッキング判定: ドメインパーツ（.区切り）単位で完全一致するキーワード
+const AD_PART_KEYWORDS = new Set([
   'ad', 'ads', 'adserver', 'adservice', 'adsystem',
   'track', 'tracker', 'tracking',
   'analytics', 'stats', 'metrics', 'telemetry',
   'beacon', 'pixel', 'pxl',
   'bid', 'bidder', 'rtb', 'ssp', 'dsp',
-  'sync', 'match', 'cookie',
+  'sync', 'match', 'cookie'
+]);
+
+// 広告・トラッキング判定: ドメイン名に含まれていれば一致（部分一致で安全なもの）
+const AD_DOMAIN_PATTERNS = [
   'doubleclick', 'googlesyndication', 'googleadservices',
-  'facebook.*pixel', 'fbevents',
+  'fbevents', 'facebook.com/tr',
   'criteo', 'pubmatic', 'rubiconproject', 'openx',
   'taboola', 'outbrain', 'mgid',
   'amazon-adsystem', 'moatads',
   'scorecardresearch', 'quantserve', 'omtrdc',
   'adnxs', 'adsrvr', 'adform', 'adroll',
-  'mopub', 'inmobi', 'appsflyer', 'adjust', 'branch',
+  'mopub', 'inmobi', 'appsflyer',
   'microad', 'i-mobile', 'imobile', 'fam-8', 'bance'
 ];
 
-// 安全なドメイン判定用キーワード
+// ccTLD（国別コードTLD + 汎用サブTLD）
+const CC_TLDS = new Set([
+  'co.jp', 'or.jp', 'ne.jp', 'ac.jp', 'go.jp',
+  'co.uk', 'org.uk', 'ac.uk',
+  'co.kr', 'or.kr', 'co.in', 'co.id',
+  'com.au', 'com.br', 'com.cn', 'com.tw', 'com.hk',
+  'com.sg', 'com.mx', 'com.ar', 'co.za', 'co.nz'
+]);
+
+// ドメインの登録ドメイン部分を取得（ccTLD対応）
+function getDomainRoot(domain) {
+  const parts = domain.split('.');
+  if (parts.length >= 3) {
+    const lastTwo = parts.slice(-2).join('.');
+    if (CC_TLDS.has(lastTwo)) {
+      return parts.length >= 3 ? parts.slice(-3).join('.') : domain;
+    }
+  }
+  return parts.length >= 2 ? parts.slice(-2).join('.') : domain;
+}
+
+// 安全なドメイン判定用（部分一致）
 const SAFE_KEYWORDS = [
   'fonts.googleapis', 'fonts.gstatic',
   'ajax.googleapis', 'cdn.jsdelivr', 'cdnjs.cloudflare',
-  'unpkg.com', 'stackpath',
+  'unpkg.com', 'stackpath', 'cloudfront.net',
+  'akamaihd.net', 'fastly.net',
   'jquery', 'bootstrap', 'fontawesome'
 ];
 
@@ -42,7 +68,7 @@ class DomainTrafficInspector {
     this.domainRules = {};
     this.expandedTags = new Set();
     this.sortBy = 'count';
-    this.searchQuery = '';
+    this.searchQueries = { traffic: '', rules: '' };
     this.activeTab = 'traffic';
     this.trafficFilter = 'all';
     this.editingRuleDomain = null;
@@ -113,7 +139,11 @@ class DomainTrafficInspector {
   // ドメインが広告/トラッキングの可能性があるか判定
   isLikelyAd(domain) {
     const lowerDomain = domain.toLowerCase();
-    return AD_KEYWORDS.some(keyword => lowerDomain.includes(keyword));
+    // ドメインパーツ（.区切り）で完全一致チェック
+    const parts = lowerDomain.split('.');
+    if (parts.some(part => AD_PART_KEYWORDS.has(part))) return true;
+    // 既知の広告ドメインパターンの部分一致チェック
+    return AD_DOMAIN_PATTERNS.some(pattern => lowerDomain.includes(pattern));
   }
 
   // ドメインが安全（CDN等）か判定
@@ -128,10 +158,6 @@ class DomainTrafficInspector {
     const mainDomain = this.domainData.main_domain;
     if (domain === mainDomain) return false;
     if (domain.endsWith('.' + mainDomain) || mainDomain.endsWith('.' + domain)) return false;
-    const getDomainRoot = (d) => {
-      const parts = d.split('.');
-      return parts.length >= 2 ? parts.slice(-2).join('.') : d;
-    };
     return getDomainRoot(domain) !== getDomainRoot(mainDomain);
   }
 
@@ -153,7 +179,7 @@ class DomainTrafficInspector {
     // 検索入力
     const searchInput = document.getElementById('searchInput');
     searchInput.addEventListener('input', (e) => {
-      this.searchQuery = e.target.value.toLowerCase();
+      this.searchQueries[this.activeTab] = e.target.value.toLowerCase();
       this.render();
     });
 
@@ -182,7 +208,10 @@ class DomainTrafficInspector {
         tabBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         this.activeTab = btn.dataset.tab;
+        // タブ切替時に検索欄を復元
+        searchInput.value = this.searchQueries[this.activeTab] || '';
         this.updateTabPanels();
+        this.render();
       });
     });
 
@@ -244,8 +273,15 @@ class DomainTrafficInspector {
     chrome.runtime.onMessage.addListener((message) => {
       if (message.type === 'UPDATE_COUNTS' && message.tabId === this.currentTabId) {
         const oldCounts = { ...this.domainData.domain_counts };
+        // domain_rulesは変更時のみ含まれる
+        const rules = message.data.domain_rules;
+        if (!rules) {
+          message.data.domain_rules = this.domainRules;
+        }
         this.domainData = message.data;
-        this.domainRules = message.data.domain_rules || {};
+        if (rules) {
+          this.domainRules = rules;
+        }
         this.render(oldCounts);
       }
     });
@@ -320,6 +356,19 @@ class DomainTrafficInspector {
     const modeToggle = document.getElementById('modeToggle');
     const newMode = modeToggle.checked ? 'strict' : 'normal';
 
+    // 厳格モードON時は警告
+    if (newMode === 'strict') {
+      const confirmed = confirm(
+        '厳格モードに切り替えますか？\n\n' +
+        '許可リストに含まれないすべてのドメインへの通信がブロックされます。' +
+        'ページの表示が崩れる可能性があります。'
+      );
+      if (!confirmed) {
+        modeToggle.checked = false;
+        return;
+      }
+    }
+
     const response = await chrome.runtime.sendMessage({
       type: 'SET_MODE',
       mode: newMode,
@@ -376,12 +425,12 @@ class DomainTrafficInspector {
     modeToggle.checked = mode === 'strict';
 
     if (mode === 'strict') {
-      modeDescription.textContent = 'ホワイトリスト方式：許可したドメインのみ通信可能';
+      modeDescription.textContent = '許可したドメインのみ通信可能（ホワイトリスト方式）';
       normalLabel.classList.remove('active');
       strictLabel.classList.add('active');
       container.classList.add('strict-mode');
     } else {
-      modeDescription.textContent = 'ブラックリスト方式：選択したドメインをブロック';
+      modeDescription.textContent = '指定したドメインのみブロック（ブラックリスト方式）';
       normalLabel.classList.add('active');
       strictLabel.classList.remove('active');
       container.classList.remove('strict-mode');
@@ -418,18 +467,18 @@ class DomainTrafficInspector {
 
   getSortedDomains() {
     const { domain_counts, blocked_domains, allowed_domains, mode } = this.domainData;
+    const blockedSet = new Set(blocked_domains);
     let domains = Object.entries(domain_counts);
-
-    // ブロック済みドメインを除外
-    domains = domains.filter(([domain]) =>
-      !blocked_domains.includes(domain)
-    );
 
     // トラフィックフィルタ
     if (this.trafficFilter === 'passing') {
       if (mode === 'strict') {
         domains = domains.filter(([domain]) =>
           allowed_domains?.includes(domain)
+        );
+      } else {
+        domains = domains.filter(([domain]) =>
+          !blockedSet.has(domain)
         );
       }
     } else if (this.trafficFilter === 'blocked') {
@@ -438,7 +487,9 @@ class DomainTrafficInspector {
           !allowed_domains?.includes(domain)
         );
       } else {
-        domains = [];
+        domains = domains.filter(([domain]) =>
+          blockedSet.has(domain)
+        );
       }
     } else if (this.trafficFilter === 'ad') {
       domains = domains.filter(([domain]) =>
@@ -451,9 +502,10 @@ class DomainTrafficInspector {
     }
 
     // 検索フィルタリング
-    if (this.searchQuery) {
+    const trafficSearch = this.searchQueries.traffic;
+    if (trafficSearch) {
       domains = domains.filter(([domain]) =>
-        domain.toLowerCase().includes(this.searchQuery)
+        domain.toLowerCase().includes(trafficSearch)
       );
     }
 
@@ -474,6 +526,8 @@ class DomainTrafficInspector {
   render(oldCounts = {}) {
     this.updateBlockingUI();
     this.updateModeUI();
+    // getSortedDomainsの結果をキャッシュしてrenderTrafficListとupdateBulkActionsで共有
+    this._cachedSortedDomains = this.getSortedDomains();
     this.renderTrafficList(oldCounts);
     // 編集中・追加フォーム表示中はルールリストの再描画をスキップ（入力が消えるのを防止）
     if (!this.editingRuleDomain && !this.showingAddForm) {
@@ -483,6 +537,7 @@ class DomainTrafficInspector {
     this.updateBulkActions();
     this.updateRulesToolbar();
     this.updateTabCounts();
+    this._cachedSortedDomains = null;
   }
 
   updateTabCounts() {
@@ -493,7 +548,7 @@ class DomainTrafficInspector {
   }
 
   updateBulkActions() {
-    const sortedDomains = this.getSortedDomains();
+    const sortedDomains = this._cachedSortedDomains || this.getSortedDomains();
     const visibleCount = sortedDomains.length;
 
     document.getElementById('visibleCount').textContent = visibleCount;
@@ -501,7 +556,7 @@ class DomainTrafficInspector {
     const bulkBlockBtn = document.getElementById('bulkBlockBtn');
     bulkBlockBtn.disabled = visibleCount === 0;
 
-    if (this.searchQuery) {
+    if (this.searchQueries.traffic) {
       bulkBlockBtn.innerHTML = `
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"/>
@@ -559,7 +614,7 @@ class DomainTrafficInspector {
   renderTrafficList(oldCounts = {}) {
     const domainList = document.getElementById('domainList');
     const emptyState = document.getElementById('emptyState');
-    const sortedDomains = this.getSortedDomains();
+    const sortedDomains = this._cachedSortedDomains || this.getSortedDomains();
 
     if (sortedDomains.length === 0) {
       emptyState.style.display = 'flex';
@@ -589,8 +644,11 @@ class DomainTrafficInspector {
       }
     });
 
+    const blockedSet = new Set(this.domainData.blocked_domains);
+
     sortedDomains.forEach(([domain, data], index) => {
       const isAllowed = this.domainData.allowed_domains?.includes(domain);
+      const isBlocked = blockedSet.has(domain);
       const isAd = this.isLikelyAd(domain);
       const isSafe = this.isLikelySafe(domain);
       const isThirdParty = this.isThirdParty(domain);
@@ -625,13 +683,15 @@ class DomainTrafficInspector {
           } else {
             itemClass += ' blocked';
           }
+        } else if (isBlocked) {
+          itemClass += ' explicitly-blocked';
         }
         if (isAd) {
           itemClass += ' likely-ad';
         }
         item.className = itemClass;
       } else {
-        item = this.createDomainItem(domain, data, isStrictMode, isAllowed, isAd, isSafe, isThirdParty, wasUpdated);
+        item = this.createDomainItem(domain, data, isStrictMode, isAllowed, isBlocked, isAd, isSafe, isThirdParty, wasUpdated);
         existingElements.set(domain, item);
         isNewItem = true;
       }
@@ -660,11 +720,14 @@ class DomainTrafficInspector {
     });
   }
 
-  createDomainItem(domain, data, isStrictMode, isAllowed, isAd, isSafe, isThirdParty, wasUpdated) {
+  createDomainItem(domain, data, isStrictMode, isAllowed, isBlocked, isAd, isSafe, isThirdParty, wasUpdated) {
     const count = typeof data === 'object' ? data.total : data;
     const types = typeof data === 'object' ? data.types : null;
 
     let tags = '';
+    if (isBlocked && !isStrictMode) {
+      tags += '<span class="domain-tag tag-blocked" title="ブロック中">停止</span>';
+    }
     if (isAd) {
       tags += '<span class="domain-tag tag-ad" title="広告/トラッキングの可能性">広告</span>';
     }
@@ -687,6 +750,8 @@ class DomainTrafficInspector {
       } else {
         itemClass += ' blocked';
       }
+    } else if (isBlocked) {
+      itemClass += ' explicitly-blocked';
     }
     if (isAd) {
       itemClass += ' likely-ad';
@@ -715,7 +780,7 @@ class DomainTrafficInspector {
       `;
     } else {
       actionButtons = `
-        <button class="block-btn" title="ブロック">
+        <button class="block-btn${isBlocked ? ' active' : ''}" title="${isBlocked ? 'ブロック解除' : 'ブロック'}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10"/>
             <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
@@ -773,11 +838,12 @@ class DomainTrafficInspector {
 
     // 検索フィルタ
     let filtered = ruleEntries;
-    if (this.searchQuery) {
+    const rulesSearch = this.searchQueries.rules;
+    if (rulesSearch) {
       filtered = ruleEntries.filter(([domain, rule]) =>
-        domain.toLowerCase().includes(this.searchQuery) ||
-        (rule.memo && rule.memo.toLowerCase().includes(this.searchQuery)) ||
-        (rule.tags && rule.tags.some(t => t.toLowerCase().includes(this.searchQuery)))
+        domain.toLowerCase().includes(rulesSearch) ||
+        (rule.memo && rule.memo.toLowerCase().includes(rulesSearch)) ||
+        (rule.tags && rule.tags.some(t => t.toLowerCase().includes(rulesSearch)))
       );
     }
 
