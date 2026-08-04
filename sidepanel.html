@@ -10,55 +10,67 @@
   <div class="container">
     <header class="header">
       <div class="header-left">
-        <h1 class="title">
+        <div class="brand-mark" aria-hidden="true">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-            <path d="M2 17l10 5 10-5"/>
-            <path d="M2 12l10 5 10-5"/>
+            <path d="M12 3 4 6v5c0 5.1 3.4 8.7 8 10 4.6-1.3 8-4.9 8-10V6l-8-3Z"/>
+            <path d="M8 12h8M10 9l-2 3 2 3M14 9l2 3-2 3"/>
           </svg>
-          Traffic Inspector
-        </h1>
+        </div>
+        <div>
+          <span class="product-kicker">NETWORK CONTROL</span>
+          <h1 class="title">Traffic Inspector</h1>
+        </div>
       </div>
       <div class="header-right">
-        <div class="blocking-toggle" id="blockingToggle" title="ブロック機能のON/OFF（全タブ共通）">
+        <div class="blocking-toggle" id="blockingToggle">
+          <span class="blocking-copy">ブロック</span>
           <span class="blocking-label" id="blockingLabel">ON</span>
           <label class="power-toggle">
-            <input type="checkbox" id="blockingSwitch" checked>
+            <span class="sr-only">ブロック機能を全タブで有効化</span>
+            <input type="checkbox" id="blockingSwitch" checked aria-describedby="globalScopeHint">
             <span class="power-slider"></span>
           </label>
         </div>
       </div>
     </header>
 
-    <div class="mode-switcher">
+    <section class="context-bar" aria-label="現在の監視対象">
+      <div class="current-page">
+        <span class="context-label">CURRENT TAB</span>
+        <strong class="current-site" id="currentSite">読み込み中...</strong>
+      </div>
+      <div class="stats-bar" aria-label="トラフィック集計">
+        <span class="stat"><strong class="stat-value" id="totalDomains">0</strong><span class="stat-label">domains</span></span>
+        <span class="stat-divider" aria-hidden="true"></span>
+        <span class="stat"><strong class="stat-value" id="totalRequests">0</strong><span class="stat-label">requests</span></span>
+      </div>
+    </section>
+
+    <section class="mode-switcher" aria-labelledby="modeHeading">
+      <div class="mode-copy">
+        <div class="mode-heading-row">
+          <strong id="modeHeading">通信ポリシー</strong>
+          <span class="scope-badge" id="globalScopeHint">全タブ共通</span>
+        </div>
+        <div class="mode-description" id="modeDescription">
+          指定したドメインのみブロック（ブラックリスト方式）
+        </div>
+      </div>
       <div class="mode-toggle-container">
         <span class="mode-label" id="normalModeLabel">通常</span>
         <label class="mode-toggle">
-          <input type="checkbox" id="modeToggle">
+          <span class="sr-only">厳格モードを切り替え</span>
+          <input type="checkbox" id="modeToggle" aria-describedby="modeDescription">
           <span class="mode-slider"></span>
         </label>
         <span class="mode-label" id="strictModeLabel">厳格</span>
       </div>
-      <div class="mode-description" id="modeDescription">
-        指定したドメインのみブロック（ブラックリスト方式）
-      </div>
-    </div>
+    </section>
 
-    <div class="stats-bar">
-      <div class="stat">
-        <span class="stat-value" id="totalDomains">0</span>
-        <span class="stat-label">ドメイン</span>
-      </div>
-      <div class="stat">
-        <span class="stat-value" id="totalRequests">0</span>
-        <span class="stat-label">リクエスト</span>
-      </div>
-    </div>
-
-    <div class="tabs">
-      <button class="tab-btn active" data-tab="traffic">トラフィック</button>
-      <button class="tab-btn" data-tab="rules">ルール <span class="tab-count" id="rulesTabCount">0</span></button>
-    </div>
+    <nav class="tabs" role="tablist" aria-label="表示内容">
+      <button id="trafficTab" class="tab-btn active" data-tab="traffic" role="tab" aria-selected="true" aria-controls="trafficPanel">トラフィック</button>
+      <button id="rulesTab" class="tab-btn" data-tab="rules" role="tab" aria-selected="false" aria-controls="rulesPanel">ルール <span class="tab-count" id="rulesTabCount">0</span></button>
+    </nav>
 
     <div class="controls">
       <div class="search-wrapper">
@@ -66,28 +78,28 @@
           <circle cx="11" cy="11" r="8"/>
           <path d="M21 21l-4.35-4.35"/>
         </svg>
-        <input type="text" id="searchInput" class="search-input" placeholder="ドメインを検索...">
+        <input type="search" id="searchInput" class="search-input" placeholder="ドメイン、メモ、タグを検索" aria-label="ドメイン、メモ、タグを検索">
       </div>
     </div>
 
     <div class="tab-panels">
-      <div class="tab-panel active" id="trafficPanel">
+      <div class="tab-panel active" id="trafficPanel" role="tabpanel" aria-labelledby="trafficTab">
         <div class="filter-sort-row">
           <div class="filter-controls">
             <label class="select-label" for="filterSelect">表示:</label>
             <select id="filterSelect" class="filter-select">
-              <option value="all">全部</option>
-              <option value="passing">通過</option>
-              <option value="blocked">停止</option>
-              <option value="ad">広告</option>
-              <option value="3p">3rd</option>
+              <option value="all">すべて</option>
+              <option value="passing">通過中</option>
+              <option value="blocked">停止中</option>
+              <option value="ad">広告候補</option>
+              <option value="3p">サードパーティ</option>
             </select>
           </div>
           <div class="sort-controls">
             <label class="select-label" for="sortSelect">並び替え:</label>
             <select id="sortSelect" class="sort-select">
-              <option value="count">数</option>
-              <option value="name">名前</option>
+              <option value="count">リクエスト数</option>
+              <option value="name">ドメイン名</option>
             </select>
           </div>
         </div>
@@ -128,7 +140,7 @@
         </div>
       </div>
 
-      <div class="tab-panel" id="rulesPanel">
+      <div class="tab-panel" id="rulesPanel" role="tabpanel" aria-labelledby="rulesTab">
         <div class="rules-toolbar" id="rulesToolbar">
           <div class="rules-toolbar-normal">
             <span class="rules-toolbar-info"><span id="rulesCount">0</span>件</span>
@@ -215,6 +227,17 @@
       </div>
     </div>
     <input type="file" id="importFileInput" accept=".json" style="display:none">
+    <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="false"></div>
+    <dialog class="confirm-dialog" id="confirmDialog" aria-labelledby="confirmDialogTitle" aria-describedby="confirmDialogMessage">
+      <form method="dialog">
+        <h2 id="confirmDialogTitle">確認</h2>
+        <p id="confirmDialogMessage"></p>
+        <div class="confirm-dialog-actions">
+          <button class="dialog-btn dialog-btn-cancel" value="cancel" autofocus>キャンセル</button>
+          <button class="dialog-btn dialog-btn-confirm" id="confirmDialogAccept" value="confirm">実行</button>
+        </div>
+      </form>
+    </dialog>
   </div>
 
   <script src="lib/domain-utils.js"></script>

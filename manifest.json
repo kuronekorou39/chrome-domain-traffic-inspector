@@ -1,15 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Domain Traffic Inspector",
-  "version": "1.0.0",
-  "description": "特定のタブから発生する通信をドメイン単位で可視化し、個別にブロック制御を行う",
+  "version": "1.1.0",
+  "minimum_chrome_version": "114",
+  "description": "現在のタブの通信先をドメイン別に可視化し、ローカル環境でブロックルールを管理します",
   "permissions": [
     "webRequest",
     "declarativeNetRequest",
-    "declarativeNetRequestFeedback",
     "storage",
-    "tabs",
-    "activeTab",
     "sidePanel"
   ],
   "host_permissions": [

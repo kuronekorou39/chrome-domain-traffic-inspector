@@ -53,11 +53,22 @@ for (const file of JS_FILES) {
 // Check manifest.json is valid JSON
 try {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'manifest.json'), 'utf-8'));
+  const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
   if (!manifest.manifest_version || !manifest.name || !manifest.version) {
     console.error('FAIL: manifest.json - missing required fields');
     hasErrors = true;
   } else {
     console.log('  OK: manifest.json');
+  }
+  if (manifest.version !== packageJson.version) {
+    console.error(`FAIL: version mismatch (manifest ${manifest.version}, package ${packageJson.version})`);
+    hasErrors = true;
+  }
+  const unnecessaryPermissions = ['activeTab', 'declarativeNetRequestFeedback', 'tabs']
+    .filter(permission => manifest.permissions?.includes(permission));
+  if (unnecessaryPermissions.length > 0) {
+    console.error(`FAIL: unnecessary permissions: ${unnecessaryPermissions.join(', ')}`);
+    hasErrors = true;
   }
 } catch (err) {
   console.error(`FAIL: manifest.json - ${err.message}`);
@@ -72,6 +83,41 @@ for (const ref of scriptRefs) {
   if (!fs.existsSync(refPath)) {
     console.error(`FAIL: sidepanel.html references missing file: ${ref}`);
     hasErrors = true;
+  }
+}
+
+if (scriptRefs.indexOf('lib/domain-utils.js') > scriptRefs.indexOf('sidepanel.js')) {
+  console.error('FAIL: lib/domain-utils.js must load before sidepanel.js');
+  hasErrors = true;
+}
+
+for (const requiredFile of [
+  'README.md', 'LICENSE', 'PRIVACY.md', 'SECURITY.md', 'CHANGELOG.md',
+  'CONTRIBUTING.md', 'CODE_OF_CONDUCT.md', 'SMOKE_TEST.md'
+]) {
+  if (!fs.existsSync(path.join(__dirname, '..', requiredFile))) {
+    console.error(`FAIL: missing public project file: ${requiredFile}`);
+    hasErrors = true;
+  }
+}
+
+for (const workflow of ['.github/workflows/ci.yml', '.github/workflows/release.yml']) {
+  const workflowSource = fs.readFileSync(path.join(__dirname, '..', workflow), 'utf-8');
+  for (const packagedFile of [
+    'LICENSE', 'PRIVACY.md', 'SECURITY.md', 'CHANGELOG.md',
+    'CONTRIBUTING.md', 'CODE_OF_CONDUCT.md', 'SMOKE_TEST.md'
+  ]) {
+    if (!workflowSource.includes(packagedFile)) {
+      console.error(`FAIL: ${workflow} does not package ${packagedFile}`);
+      hasErrors = true;
+    }
+  }
+  const actionReferences = [...workflowSource.matchAll(/uses:\s+([^\s#]+)/g)].map(match => match[1]);
+  for (const actionReference of actionReferences) {
+    if (!/@[0-9a-f]{40}$/.test(actionReference)) {
+      console.error(`FAIL: ${workflow} action is not pinned to a commit SHA: ${actionReference}`);
+      hasErrors = true;
+    }
   }
 }
 

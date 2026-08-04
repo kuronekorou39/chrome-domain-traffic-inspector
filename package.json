@@ -1,16 +1,28 @@
 {
   "name": "chrome-domain-traffic-inspector",
-  "version": "1.0.0",
-  "description": "Chrome extension for domain traffic monitoring and blocking",
+  "version": "1.1.0",
+  "description": "Chrome side panel extension for inspecting and controlling domain traffic",
   "scripts": {
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
-    "lint": "node scripts/lint.js"
+    "lint": "node scripts/lint.js && eslint ."
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "chrome-extension",
+    "network",
+    "privacy",
+    "traffic-inspector"
+  ],
+  "author": "kuronekorou39",
   "license": "ISC",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "devDependencies": {
-    "vitest": "^1.6.1"
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^10.8.0",
+    "jsdom": "^29.1.1",
+    "vitest": "^4.1.10"
   }
 }

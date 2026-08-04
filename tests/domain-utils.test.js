@@ -3,6 +3,8 @@ import { describe, it, expect } from 'vitest';
 const {
   getDomainRoot,
   extractDomain,
+  normalizeDomain,
+  isValidDomain,
   getShortType,
   isLikelyAd,
   isLikelySafe,
@@ -37,8 +39,33 @@ describe('getDomainRoot', () => {
     expect(getDomainRoot('sub.example.org')).toBe('example.org');
   });
 
+  it('プライベートサフィックスはテナント単位で返す', () => {
+    expect(getDomainRoot('alice.github.io')).toBe('alice.github.io');
+    expect(getDomainRoot('app.example.pages.dev')).toBe('example.pages.dev');
+  });
+
   it('1パーツドメインはそのまま返す', () => {
     expect(getDomainRoot('localhost')).toBe('localhost');
+  });
+
+  it('IPアドレスをドメインのように切り詰めない', () => {
+    expect(getDomainRoot('192.168.0.1')).toBe('192.168.0.1');
+    expect(isThirdParty('192.168.0.1', '10.0.0.1')).toBe(true);
+  });
+});
+
+describe('normalizeDomain', () => {
+  it('大文字・末尾ドット・国際化ドメインを正規化する', () => {
+    expect(normalizeDomain(' Example.COM. ')).toBe('example.com');
+    expect(normalizeDomain('例え.テスト')).toBe('xn--r8jz45g.xn--zckzah');
+  });
+
+  it('URLや危険なプロパティ名を拒否する', () => {
+    expect(normalizeDomain('https://example.com')).toBeNull();
+    expect(normalizeDomain('example.com/path')).toBeNull();
+    expect(normalizeDomain('__proto__')).toBeNull();
+    expect(isValidDomain('example.com')).toBe(true);
+    expect(isValidDomain('-invalid.example')).toBe(false);
   });
 });
 
@@ -136,12 +163,13 @@ describe('isLikelySafe', () => {
     expect(isLikelySafe('cdn.jsdelivr.net')).toBe(true);
     expect(isLikelySafe('cdnjs.cloudflare.com')).toBe(true);
     expect(isLikelySafe('d1234.cloudfront.net')).toBe(true);
-    expect(isLikelySafe('code.jquery.com')).toBe(true);
   });
 
   it('一般ドメインは安全判定しない', () => {
     expect(isLikelySafe('example.com')).toBe(false);
     expect(isLikelySafe('evil.com')).toBe(false);
+    expect(isLikelySafe('notjquery-malware.example')).toBe(false);
+    expect(isLikelySafe('cdn.jsdelivr.net.evil.example')).toBe(false);
   });
 });
 
@@ -166,6 +194,11 @@ describe('isThirdParty', () => {
   it('ccTLDドメインの同一判定が正しい', () => {
     expect(isThirdParty('cdn.example.co.jp', 'example.co.jp')).toBe(false);
     expect(isThirdParty('other.co.jp', 'example.co.jp')).toBe(true);
+  });
+
+  it('プライベートサフィックス上の別テナントをサードパーティ扱いする', () => {
+    expect(isThirdParty('alice.github.io', 'bob.github.io')).toBe(true);
+    expect(isThirdParty('alice.pages.dev', 'bob.pages.dev')).toBe(true);
   });
 
   it('mainDomainがnullならfalse', () => {

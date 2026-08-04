@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Domain Traffic Inspector">
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#175CD3"/>
+  <path d="M64 21 31 33v22c0 25 13.8 43.5 33 51 19.2-7.5 33-26 33-51V33L64 21Z" fill="#0B4EB5" stroke="#FFFFFF" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M42 52h41m-10-10 10 10-10 10M86 77H45m10-10L45 77l10 10" fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
