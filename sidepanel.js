@@ -1,5 +1,6 @@
 // Domain Traffic Inspector - Side Panel Logic
 // 共有定数・関数は lib/domain-utils.js で定義（HTMLで先に読み込み）
+const MAX_IMPORT_RULES = 4999;
 
 class DomainTrafficInspector {
   constructor() {
@@ -12,9 +13,17 @@ class DomainTrafficInspector {
       mode: 'normal',
       allowed_domains: [],
       blocking_enabled: true,
-      domain_rules: {}
+      domain_rules: {},
+      site_policy: {
+        site_domain: null,
+        enabled: false,
+        rules: {},
+        temporary_allows: {},
+        precise_scope: false
+      }
     };
     this.domainRules = {};
+    this.policyScope = 'global';
     this.expandedTags = new Set();
     this.sortBy = 'count';
     this.searchQueries = { traffic: '', rules: '' };
@@ -150,6 +159,87 @@ class DomainTrafficInspector {
   isLikelySafe(domain) { return isLikelySafe(domain); }
   isThirdParty(domain) { return isThirdParty(domain, this.domainData.main_domain); }
 
+  getGlobalPolicyRule(domain) {
+    const ruleDomain = findMostSpecificDomainRule(domain, Object.keys(this.domainRules));
+    if (!ruleDomain) return null;
+    return {
+      domain: ruleDomain,
+      action: this.domainRules[ruleDomain].action,
+      inherited: ruleDomain !== domain,
+      source: 'global'
+    };
+  }
+
+  getTemporarySiteRule(domain) {
+    const policy = this.domainData.site_policy;
+    if (!policy?.enabled || !policy.site_domain) return null;
+
+    const now = Date.now();
+    const temporaryAllows = policy.temporary_allows || {};
+    const activeTemporaryDomains = Object.keys(temporaryAllows)
+      .filter(ruleDomain => Number(temporaryAllows[ruleDomain]) > now);
+    const temporaryDomain = findMostSpecificDomainRule(domain, activeTemporaryDomains);
+    if (temporaryDomain) {
+      return {
+        domain: temporaryDomain,
+        action: 'allow',
+        inherited: temporaryDomain !== domain,
+        source: 'temporary',
+        expiresAt: Number(temporaryAllows[temporaryDomain])
+      };
+    }
+    return null;
+  }
+
+  getSitePolicyRule(domain, { includeDefault = true } = {}) {
+    const policy = this.domainData.site_policy;
+    if (!policy?.enabled || !policy.site_domain) return null;
+
+    const temporaryRule = this.getTemporarySiteRule(domain);
+    if (temporaryRule) return temporaryRule;
+
+    const rules = policy.rules || {};
+    const ruleDomain = findMostSpecificDomainRule(domain, Object.keys(rules));
+    if (ruleDomain) {
+      return {
+        domain: ruleDomain,
+        action: rules[ruleDomain].action,
+        inherited: ruleDomain !== domain,
+        source: 'site'
+      };
+    }
+
+    if (!includeDefault) return null;
+    return {
+      domain: policy.site_domain,
+      action: 'block',
+      inherited: domain !== policy.site_domain,
+      source: 'site-default',
+      defaultRule: true
+    };
+  }
+
+  getEffectivePolicyRule(domain) {
+    return this.getSitePolicyRule(domain) || this.getGlobalPolicyRule(domain);
+  }
+
+  getScopedControlRule(domain) {
+    if (this.policyScope !== 'site') return this.getGlobalPolicyRule(domain);
+    const rules = this.domainData.site_policy?.rules || {};
+    const ruleDomain = findMostSpecificDomainRule(domain, Object.keys(rules));
+    if (!ruleDomain) return null;
+    return {
+      domain: ruleDomain,
+      action: rules[ruleDomain].action,
+      inherited: ruleDomain !== domain,
+      source: 'site'
+    };
+  }
+
+  isFirstParty(domain) {
+    return Boolean(this.domainData.main_domain) && !this.isThirdParty(domain);
+  }
+
   async init() {
     await this.getCurrentTab();
     this.bindEvents();
@@ -225,7 +315,14 @@ class DomainTrafficInspector {
 
     // 一括ブロックボタン
     const bulkBlockBtn = document.getElementById('bulkBlockBtn');
-    bulkBlockBtn.addEventListener('click', () => this.runAction(() => this.bulkBlock()));
+    bulkBlockBtn.addEventListener('click', () => this.runAction(() => this.bulkPolicyAction()));
+
+    const allowCurrentSiteBtn = document.getElementById('allowCurrentSiteBtn');
+    allowCurrentSiteBtn.addEventListener('click', () => this.runAction(() => this.handlePolicyBuilderAction()));
+
+    document.querySelectorAll('[data-policy-scope]').forEach(button => {
+      button.addEventListener('click', () => this.setPolicyScope(button.dataset.policyScope));
+    });
 
     // モードトグル
     const modeToggle = document.getElementById('modeToggle');
@@ -285,6 +382,12 @@ class DomainTrafficInspector {
           this.domainRules = rules;
         }
         this.render(oldCounts);
+      } else if (message.type === 'SITE_POLICY_UPDATED') {
+        const currentSiteDomain = this.domainData.site_policy?.site_domain;
+        if (message.siteDomain === currentSiteDomain) {
+          this.domainData.site_policy = message.sitePolicy;
+          this.render();
+        }
       }
     });
   }
@@ -317,9 +420,54 @@ class DomainTrafficInspector {
     this.render();
   }
 
+  setPolicyScope(scope) {
+    if (scope !== 'global' && scope !== 'site') return;
+    this.policyScope = scope;
+    this.render();
+  }
+
+  async handlePolicyBuilderAction() {
+    if (this.policyScope === 'site') {
+      await this.toggleSitePolicy();
+    } else {
+      await this.allowCurrentSite();
+    }
+  }
+
+  async toggleSitePolicy() {
+    const siteDomain = this.domainData.site_policy?.site_domain || getDomainRoot(this.domainData.main_domain);
+    if (!siteDomain) return;
+    const enabled = Boolean(this.domainData.site_policy?.enabled);
+
+    if (enabled) {
+      const confirmed = await this.confirmAction({
+        title: 'このサイトの保護を解除',
+        message: `${siteDomain} 専用の停止ルールを無効にします。保存したサイト専用ルールは残ります。`,
+        confirmLabel: '保護を解除'
+      });
+      if (!confirmed) return;
+    }
+
+    const response = await this.request({
+      type: enabled ? 'DISABLE_SITE_POLICY' : 'ENABLE_SITE_POLICY',
+      siteDomain
+    });
+    this.domainData.site_policy = response.site_policy;
+    this.render();
+    this.showToast(enabled
+      ? `${siteDomain} のサイト保護を解除しました`
+      : `${siteDomain} 内の未登録通信を停止します`);
+  }
+
   async toggleBlock(domain) {
-    const isBlocked = this.domainData.blocked_domains.includes(domain);
-    const messageType = isBlocked ? 'UNBLOCK_DOMAIN' : 'BLOCK_DOMAIN';
+    if (this.policyScope === 'site') {
+      await this.toggleSiteRule(domain, 'block');
+      return;
+    }
+
+    const effectiveRule = this.getGlobalPolicyRule(domain);
+    const hasExactBlock = effectiveRule?.action === 'block' && !effectiveRule.inherited;
+    const messageType = hasExactBlock ? 'UNBLOCK_DOMAIN' : 'BLOCK_DOMAIN';
 
     const response = await this.request({
       type: messageType,
@@ -331,6 +479,100 @@ class DomainTrafficInspector {
       this.domainRules = response.domain_rules || this.domainRules;
       this.render();
     }
+  }
+
+  async toggleAllow(domain) {
+    if (this.policyScope === 'site') {
+      await this.toggleSiteRule(domain, 'allow');
+      return;
+    }
+
+    const effectiveRule = this.getGlobalPolicyRule(domain);
+    const hasExactAllow = effectiveRule?.action === 'allow' && !effectiveRule.inherited;
+    if (hasExactAllow) {
+      await this.disallowDomain(domain);
+    } else {
+      await this.allowDomain(domain);
+    }
+  }
+
+  async bulkPolicyAction() {
+    if (this.policyScope === 'site') {
+      await this.bulkAllowSiteDomains();
+      return;
+    }
+    if (this.domainData.mode === 'strict') {
+      await this.bulkAllow();
+    } else {
+      await this.bulkBlock();
+    }
+  }
+
+  async toggleSiteRule(domain, action) {
+    const sitePolicy = this.domainData.site_policy;
+    if (!sitePolicy?.enabled || !sitePolicy.site_domain) {
+      this.showToast('先に「サイト保護を開始」を選んでください', 'error');
+      return;
+    }
+
+    const scopedRule = this.getScopedControlRule(domain);
+    const hasExactRule = scopedRule?.action === action && !scopedRule.inherited;
+    const response = await this.request({
+      type: hasExactRule ? 'DELETE_SITE_RULE' : 'SET_SITE_RULE',
+      siteDomain: sitePolicy.site_domain,
+      domain,
+      ...(hasExactRule ? {} : { action })
+    });
+    this.domainData.site_policy = response.site_policy;
+    this.render();
+  }
+
+  async bulkAllowSiteDomains() {
+    const sitePolicy = this.domainData.site_policy;
+    if (!sitePolicy?.enabled || !sitePolicy.site_domain) {
+      this.showToast('先に「サイト保護を開始」を選んでください', 'error');
+      return;
+    }
+
+    const visibleDomains = this.getSortedDomains()
+      .map(([domain]) => domain)
+      .filter(domain => this.getSitePolicyRule(domain)?.action !== 'allow');
+    if (visibleDomains.length === 0) {
+      this.showToast('表示中のドメインはすべてサイト内で許可済みです');
+      return;
+    }
+
+    const confirmed = await this.confirmAction({
+      title: 'このサイト内で表示中の通信を許可',
+      message: `${visibleDomains.length}件を ${sitePolicy.site_domain} 専用の許可リストへ追加します。他サイトには影響しません。`,
+      confirmLabel: 'サイト内で許可',
+      danger: false
+    });
+    if (!confirmed) return;
+
+    const response = await this.request({
+      type: 'BULK_ALLOW_SITE_DOMAINS',
+      siteDomain: sitePolicy.site_domain,
+      domains: visibleDomains
+    });
+    this.domainData.site_policy = response.site_policy;
+    this.render();
+    this.showToast(`${visibleDomains.length}件をこのサイト内で許可しました`);
+  }
+
+  async toggleTemporaryAllow(domain) {
+    const sitePolicy = this.domainData.site_policy;
+    if (!sitePolicy?.enabled || !sitePolicy.site_domain) return;
+    const expiresAt = Number(sitePolicy.temporary_allows?.[domain] || 0);
+    const isActive = expiresAt > Date.now();
+    const response = await this.request({
+      type: isActive ? 'REMOVE_TEMPORARY_SITE_ALLOW' : 'TEMPORARILY_ALLOW_SITE_DOMAIN',
+      siteDomain: sitePolicy.site_domain,
+      domain
+    });
+    this.domainData.site_policy = response.site_policy;
+    this.render();
+    this.showToast(isActive ? `${domain} の一時許可を解除しました` : `${domain} を5分だけ許可しました`);
   }
 
   // 表示中のドメインをすべてブロック
@@ -355,6 +597,47 @@ class DomainTrafficInspector {
       this.domainRules = response.domain_rules || this.domainRules;
       this.render();
     }
+  }
+
+  // 厳格モードで、現在の絞り込み結果を許可リストへ追加する
+  async bulkAllow() {
+    const visibleDomains = this.getSortedDomains()
+      .map(([domain]) => domain)
+      .filter(domain => this.getGlobalPolicyRule(domain)?.action !== 'allow');
+    if (visibleDomains.length === 0) {
+      this.showToast('表示中のドメインはすべて許可済みです');
+      return;
+    }
+
+    const confirmed = await this.confirmAction({
+      title: '表示中の通信を許可',
+      message: `${visibleDomains.length}件のドメインを許可します。より広い親ルールがある場合も、このドメインの例外が優先されます。`,
+      confirmLabel: '許可する',
+      danger: false
+    });
+    if (!confirmed) return;
+
+    const response = await this.request({
+      type: 'BULK_ALLOW',
+      domains: visibleDomains
+    });
+
+    if (response.success) {
+      this.domainData.blocked_domains = response.blocked_domains;
+      this.domainData.allowed_domains = response.allowed_domains;
+      this.domainRules = response.domain_rules || this.domainRules;
+      this.render();
+      this.showToast(`${visibleDomains.length}件を許可しました`);
+    }
+  }
+
+  async allowCurrentSite() {
+    const domain = this.domainData.main_domain;
+    if (!domain) return;
+    const effectiveRule = this.getEffectivePolicyRule(domain);
+    if (effectiveRule?.action === 'allow') return;
+    await this.allowDomain(domain);
+    this.showToast(`${domain} を許可しました`);
   }
 
   // モード切り替え
@@ -446,12 +729,13 @@ class DomainTrafficInspector {
 
   isDomainEffectivelyBlocked(domain) {
     if (!this.domainData.blocking_enabled) return false;
-    if (this.domainData.blocked_domains.includes(domain)) return true;
+    const effectiveRule = this.getEffectivePolicyRule(domain);
+    if (effectiveRule) return effectiveRule.action === 'block';
     if (this.domainData.mode !== 'strict') return false;
-    return !this.domainData.allowed_domains?.includes(domain);
+    return true;
   }
 
-  // ドメインを許可（厳格モード用）
+  // ドメインを許可（厳格モードまたは親ブロックの例外）
   async allowDomain(domain) {
     const response = await this.request({
       type: 'ALLOW_DOMAIN',
@@ -465,7 +749,7 @@ class DomainTrafficInspector {
     }
   }
 
-  // ドメインの許可を解除（厳格モード用）
+  // ドメインの許可を解除
   async disallowDomain(domain) {
     const response = await this.request({
       type: 'DISALLOW_DOMAIN',
@@ -532,6 +816,7 @@ class DomainTrafficInspector {
     }
     this.updateStats();
     this.updateBulkActions();
+    this.updatePolicyBuilder();
     this.updateRulesToolbar();
     this.updateTabCounts();
     this._cachedSortedDomains = null;
@@ -551,17 +836,44 @@ class DomainTrafficInspector {
     document.getElementById('visibleCount').textContent = visibleCount;
 
     const bulkBlockBtn = document.getElementById('bulkBlockBtn');
-    bulkBlockBtn.disabled = visibleCount === 0 || !this.domainData.blocking_enabled;
+    const isSiteScope = this.policyScope === 'site';
+    const sitePolicyEnabled = Boolean(this.domainData.site_policy?.enabled);
+    bulkBlockBtn.disabled = visibleCount === 0 || !this.domainData.blocking_enabled || (isSiteScope && !sitePolicyEnabled);
+    const isStrictMode = isSiteScope || this.domainData.mode === 'strict';
+    bulkBlockBtn.classList.toggle('bulk-allow', isStrictMode);
+    bulkBlockBtn.classList.toggle('bulk-block', !isStrictMode);
 
-    if (this.searchQueries.traffic) {
+    if (isSiteScope) {
+      bulkBlockBtn.title = sitePolicyEnabled
+        ? '表示中のドメインをこのサイト専用の許可リストへ追加'
+        : '先にサイト保護を開始してください';
+      bulkBlockBtn.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <path d="m8.5 12 2.3 2.3 4.7-4.8"/>
+        </svg>
+        ${this.searchQueries.traffic ? '絞り込みをサイト許可' : '表示中をサイト許可'}
+      `;
+    } else if (isStrictMode) {
+      bulkBlockBtn.title = '表示中のドメインを許可リストへ追加';
+      bulkBlockBtn.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <path d="m8.5 12 2.3 2.3 4.7-4.8"/>
+        </svg>
+        ${this.searchQueries.traffic ? '絞り込みを許可' : '表示中を許可'}
+      `;
+    } else if (this.searchQueries.traffic) {
+      bulkBlockBtn.title = '絞り込み結果をすべてブロック';
       bulkBlockBtn.innerHTML = `
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"/>
           <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
         </svg>
-        絞込みをブロック
+        絞り込みをブロック
       `;
     } else {
+      bulkBlockBtn.title = '表示中をすべてブロック';
       bulkBlockBtn.innerHTML = `
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"/>
@@ -570,6 +882,68 @@ class DomainTrafficInspector {
         すべてブロック
       `;
     }
+  }
+
+  updatePolicyBuilder() {
+    const button = document.getElementById('allowCurrentSiteBtn');
+    const buttonLabel = button.querySelector('span');
+    const kicker = document.getElementById('policyBuilderKicker');
+    const title = document.getElementById('policyBuilderTitle');
+    const hint = document.getElementById('policyBuilderHint');
+    const domain = this.domainData.main_domain;
+    const isSiteScope = this.policyScope === 'site';
+    document.querySelectorAll('[data-policy-scope]').forEach(scopeButton => {
+      const active = scopeButton.dataset.policyScope === this.policyScope;
+      scopeButton.classList.toggle('active', active);
+      scopeButton.setAttribute('aria-pressed', String(active));
+    });
+
+    if (isSiteScope) {
+      const sitePolicy = this.domainData.site_policy || {};
+      const siteDomain = sitePolicy.site_domain || getDomainRoot(domain);
+      const enabled = Boolean(sitePolicy.enabled);
+      const ruleCount = Object.keys(sitePolicy.rules || {}).length;
+      const temporaryCount = Object.values(sitePolicy.temporary_allows || {})
+        .filter(expiresAt => Number(expiresAt) > Date.now()).length;
+
+      kicker.textContent = enabled ? 'SITE POLICY · ON' : 'SITE POLICY';
+      title.textContent = siteDomain ? `${siteDomain} 専用ポリシー` : 'このページは対象外';
+      hint.textContent = !siteDomain
+        ? '通常のWebページを開いてから設定してください'
+        : enabled
+          ? `${ruleCount}件を登録${temporaryCount ? `・一時許可 ${temporaryCount}件` : ''}。未登録通信はこのサイト内だけ停止します${sitePolicy.precise_scope ? '' : '（互換スコープ）'}`
+          : 'このサイト内だけ、未登録の外部通信を既定で停止します。サイト本体は自動で許可します';
+      button.disabled = !siteDomain || !this.domainData.blocking_enabled;
+      button.classList.remove('is-allowed');
+      button.classList.toggle('is-danger', enabled);
+      buttonLabel.textContent = enabled ? 'サイト保護を解除' : 'サイト保護を開始';
+      button.title = sitePolicy.precise_scope || !enabled
+        ? ''
+        : 'Chrome 145未満では送信元ドメインを使う互換スコープです';
+      return;
+    }
+
+    button.classList.remove('is-danger');
+    const effectiveRule = domain ? this.getGlobalPolicyRule(domain) : null;
+    const isAllowed = effectiveRule?.action === 'allow';
+    const isStrictMode = this.domainData.mode === 'strict';
+
+    kicker.textContent = isStrictMode ? 'STRICT ALLOWLIST' : 'ALLOWLIST BUILDER';
+    title.textContent = isStrictMode ? '必要な通信だけを通す' : '現在のサイトを起点にする';
+    hint.textContent = isStrictMode
+      ? '未許可の通信は停止中です。現在サイトや表示中の依存先を選んで許可します'
+      : '先に許可しておくと、厳格モードで必要な外部通信を段階的に追加できます';
+
+    button.disabled = !domain || !this.domainData.blocking_enabled || isAllowed;
+    button.classList.toggle('is-allowed', isAllowed);
+    buttonLabel.textContent = !domain
+      ? 'このページは対象外'
+      : isAllowed
+        ? effectiveRule.inherited ? `${effectiveRule.domain} から許可` : '現在サイトは許可済み'
+        : '現在サイトを許可';
+    button.title = isAllowed && effectiveRule.inherited
+      ? `${effectiveRule.domain} の許可ルールを継承しています`
+      : '';
   }
 
   updateStats() {
@@ -615,7 +989,7 @@ class DomainTrafficInspector {
 
     emptyState.style.display = 'none';
 
-    const isStrictMode = this.domainData.mode === 'strict' && this.domainData.blocking_enabled;
+    const isStrictMode = (this.domainData.mode === 'strict' || this.domainData.site_policy?.enabled) && this.domainData.blocking_enabled;
 
     const currentDomains = new Set(sortedDomains.map(([d]) => d));
 
@@ -635,14 +1009,19 @@ class DomainTrafficInspector {
     });
 
     sortedDomains.forEach(([domain, data], index) => {
-      const isAllowed = this.domainData.allowed_domains?.includes(domain);
+      const effectiveRule = this.getEffectivePolicyRule(domain);
+      const controlRule = this.getScopedControlRule(domain);
+      const temporaryRule = this.getTemporarySiteRule(domain);
+      const isAllowed = effectiveRule?.action === 'allow';
       const isBlocked = this.isDomainEffectivelyBlocked(domain);
       const isAd = this.isLikelyAd(domain);
       const isSafe = this.isLikelySafe(domain);
       const isThirdParty = this.isThirdParty(domain);
+      const isFirstParty = this.isFirstParty(domain);
       const stateSignature = [
         this.domainData.blocking_enabled, isStrictMode, isAllowed, isBlocked, isAd, isSafe, isThirdParty,
-        this.domainData.blocked_domains.includes(domain)
+        isFirstParty, effectiveRule?.domain || '', effectiveRule?.action || '', effectiveRule?.source || '',
+        controlRule?.domain || '', controlRule?.action || '', temporaryRule?.domain || '', this.policyScope
       ].join(':');
 
       const count = typeof data === 'object' ? data.total : data;
@@ -710,10 +1089,26 @@ class DomainTrafficInspector {
   createDomainItem(domain, data, isStrictMode, isAllowed, isBlocked, isAd, isSafe, isThirdParty, wasUpdated) {
     const count = typeof data === 'object' ? data.total : data;
     const types = typeof data === 'object' ? data.types : null;
+    const effectiveRule = this.getEffectivePolicyRule(domain);
+    const controlRule = this.getScopedControlRule(domain);
+    const temporaryRule = this.getTemporarySiteRule(domain);
+    const hasExactAllow = controlRule?.action === 'allow' && !controlRule.inherited;
+    const hasExactBlock = controlRule?.action === 'block' && !controlRule.inherited;
+    const isFirstParty = this.isFirstParty(domain);
 
     let tags = '';
     if (isBlocked) {
       tags += '<span class="domain-tag tag-blocked" title="ブロック中">停止</span>';
+    } else if (isAllowed) {
+      tags += '<span class="domain-tag tag-allowed" title="許可ルールが適用中">許可</span>';
+    }
+    if (effectiveRule?.source === 'temporary') {
+      tags += '<span class="domain-tag tag-temporary" title="5分間の一時許可が適用中">一時</span>';
+    } else if (effectiveRule?.source === 'site' || effectiveRule?.source === 'site-default') {
+      tags += '<span class="domain-tag tag-site" title="このサイト専用ポリシーが適用中">サイト</span>';
+    }
+    if (effectiveRule?.inherited && !effectiveRule.defaultRule) {
+      tags += `<span class="domain-tag tag-inherited" title="${this.escapeHtml(effectiveRule.domain)} のルールを継承">親ルール</span>`;
     }
     if (isAd) {
       tags += '<span class="domain-tag tag-ad" title="広告/トラッキングの可能性">広告</span>';
@@ -723,13 +1118,16 @@ class DomainTrafficInspector {
     }
     if (isThirdParty) {
       tags += '<span class="domain-tag tag-3p" title="サードパーティ">3rd</span>';
+    } else if (isFirstParty) {
+      tags += '<span class="domain-tag tag-1p" title="現在サイトと同じ登録ドメイン">1st</span>';
     }
 
     const item = document.createElement('div');
     item.dataset.domain = domain;
     item.dataset.state = [
       this.domainData.blocking_enabled, isStrictMode, isAllowed, isBlocked, isAd, isSafe, isThirdParty,
-      this.domainData.blocked_domains.includes(domain)
+      isFirstParty, effectiveRule?.domain || '', effectiveRule?.action || '', effectiveRule?.source || '',
+      controlRule?.domain || '', controlRule?.action || '', temporaryRule?.domain || '', this.policyScope
     ].join(':');
     item.dataset.new = 'true';
     setTimeout(() => delete item.dataset.new, 200);
@@ -743,6 +1141,8 @@ class DomainTrafficInspector {
       }
     } else if (isBlocked) {
       itemClass += ' explicitly-blocked';
+    } else if (isAllowed) {
+      itemClass += ' allowed';
     }
     if (isAd) {
       itemClass += ' likely-ad';
@@ -750,37 +1150,50 @@ class DomainTrafficInspector {
 
     item.className = itemClass;
 
-    let actionButtons = '';
-    const isExplicitlyBlocked = this.domainData.blocked_domains.includes(domain);
-    const disabledAttribute = this.domainData.blocking_enabled ? '' : ' disabled';
-
-    if (isStrictMode) {
-      actionButtons = `
-        <button class="allow-btn${isAllowed ? ' active' : ''}" title="${isAllowed ? '許可を解除' : '許可する'}" aria-label="${isAllowed ? `${this.escapeHtml(domain)} の許可を解除` : `${this.escapeHtml(domain)} を許可`}"${disabledAttribute}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            ${isAllowed
-              ? '<path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="M9 12l2 2 4-4"/>'
-              : '<circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/>'
-            }
-          </svg>
-        </button>
-        <button class="block-btn${isExplicitlyBlocked ? ' active' : ''}" title="${isExplicitlyBlocked ? '明示ブロックを解除' : '常にブロック'}" aria-label="${isExplicitlyBlocked ? `${this.escapeHtml(domain)} の明示ブロックを解除` : `${this.escapeHtml(domain)} を常にブロック`}"${disabledAttribute}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
-          </svg>
-        </button>
-      `;
-    } else {
-      actionButtons = `
-        <button class="block-btn${isExplicitlyBlocked ? ' active' : ''}" title="${isExplicitlyBlocked ? 'ブロック解除' : 'ブロック'}" aria-label="${isExplicitlyBlocked ? `${this.escapeHtml(domain)} のブロックを解除` : `${this.escapeHtml(domain)} をブロック`}"${disabledAttribute}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
-          </svg>
-        </button>
-      `;
-    }
+    const siteScopeUnavailable = this.policyScope === 'site' && !this.domainData.site_policy?.enabled;
+    const isRequiredSiteOrigin = this.policyScope === 'site' &&
+      (domain === this.domainData.main_domain || domain === this.domainData.site_policy?.site_domain);
+    const controlsDisabled = !this.domainData.blocking_enabled || siteScopeUnavailable;
+    const allowInherited = controlRule?.action === 'allow' && controlRule.inherited;
+    const blockInherited = controlRule?.action === 'block' && controlRule.inherited;
+    const scopeLabel = this.policyScope === 'site' ? 'このサイト内で' : '全タブで';
+    const allowTitle = isRequiredSiteOrigin
+      ? 'サイト本体は保護の起点として常に許可されます'
+      : allowInherited
+      ? `${controlRule.domain} の許可を継承中。個別に止めるにはブロックを選択`
+      : hasExactAllow ? `${scopeLabel}このドメインの許可ルールを削除` : `${scopeLabel}このドメインを許可`;
+    const blockTitle = isRequiredSiteOrigin
+      ? 'サイト本体はサイト保護の起点として常に許可されます'
+      : blockInherited
+      ? `${controlRule.domain} のブロックを継承中。個別に通すには許可を選択`
+      : hasExactBlock ? `${scopeLabel}このドメインのブロックルールを削除` : `${scopeLabel}このドメインをブロック`;
+    const exactTemporaryAllow = temporaryRule && !temporaryRule.inherited;
+    const temporaryTitle = isRequiredSiteOrigin
+      ? 'サイト本体はすでに許可されています'
+      : temporaryRule?.inherited
+      ? `${temporaryRule.domain} の一時許可を継承中`
+      : exactTemporaryAllow ? '5分間の一時許可を解除' : 'このサイト内で5分だけ許可';
+    const temporaryButton = this.policyScope === 'site' ? `
+      <button class="temporary-allow-btn${exactTemporaryAllow ? ' active' : ''}${temporaryRule?.inherited ? ' inherited' : ''}" title="${this.escapeHtml(temporaryTitle)}" aria-label="${this.escapeHtml(temporaryTitle)}"${controlsDisabled || temporaryRule?.inherited || isRequiredSiteOrigin ? ' disabled' : ''}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
+        </svg>
+      </button>
+    ` : '';
+    const actionButtons = `
+      <button class="allow-btn${controlRule?.action === 'allow' ? ' active' : ''}${allowInherited ? ' inherited' : ''}" title="${this.escapeHtml(allowTitle)}" aria-label="${this.escapeHtml(allowTitle)}"${controlsDisabled || allowInherited || isRequiredSiteOrigin ? ' disabled' : ''}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/>
+        </svg>
+      </button>
+      <button class="block-btn${controlRule?.action === 'block' ? ' active' : ''}${blockInherited ? ' inherited' : ''}" title="${this.escapeHtml(blockTitle)}" aria-label="${this.escapeHtml(blockTitle)}"${controlsDisabled || blockInherited || isRequiredSiteOrigin ? ' disabled' : ''}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+        </svg>
+      </button>
+      ${temporaryButton}
+    `;
 
     item.innerHTML = `
       <div class="domain-info">
@@ -807,13 +1220,12 @@ class DomainTrafficInspector {
 
     const allowBtn = item.querySelector('.allow-btn');
     if (allowBtn) {
-      allowBtn.addEventListener('click', () => {
-        if (this.domainData.allowed_domains?.includes(domain)) {
-          this.runAction(() => this.disallowDomain(domain));
-        } else {
-          this.runAction(() => this.allowDomain(domain));
-        }
-      });
+      allowBtn.addEventListener('click', () => this.runAction(() => this.toggleAllow(domain)));
+    }
+
+    const temporaryAllowBtn = item.querySelector('.temporary-allow-btn');
+    if (temporaryAllowBtn) {
+      temporaryAllowBtn.addEventListener('click', () => this.runAction(() => this.toggleTemporaryAllow(domain)));
     }
 
     return item;
@@ -1549,8 +1961,8 @@ class DomainTrafficInspector {
     }
 
     const entries = Object.entries(data.rules);
-    if (entries.length === 0 || entries.length > 5000) {
-      throw new Error('ルール件数は1〜5000件で指定してください');
+    if (entries.length === 0 || entries.length > MAX_IMPORT_RULES) {
+      throw new Error(`ルール件数は1〜${MAX_IMPORT_RULES}件で指定してください`);
     }
 
     const rules = Object.create(null);

@@ -28,9 +28,17 @@ function createInspector() {
     mode: 'normal',
     allowed_domains: [],
     blocking_enabled: true,
-    domain_rules: {}
+    domain_rules: {},
+    site_policy: {
+      site_domain: 'example.com',
+      enabled: false,
+      rules: {},
+      temporary_allows: {},
+      precise_scope: true
+    }
   };
   inspector.domainRules = {};
+  inspector.policyScope = 'global';
   inspector.expandedTags = new Set();
   inspector.selectedRules = new Set();
   inspector.searchQueries = { traffic: '', rules: '' };
@@ -65,6 +73,9 @@ describe('sidepanel UI logic', () => {
     expect(inspector.isDomainEffectivelyBlocked('third-party.example')).toBe(true);
 
     inspector.domainData.allowed_domains = ['app.example.com'];
+    inspector.domainRules = {
+      'app.example.com': { action: 'allow', memo: '', tags: [] }
+    };
     expect(inspector.isDomainEffectivelyBlocked('app.example.com')).toBe(false);
 
     inspector.domainData.blocking_enabled = false;
@@ -79,6 +90,9 @@ describe('sidepanel UI logic', () => {
     expect(blocked.classList.contains('blocked')).toBe(true);
     expect(blocked.querySelector('.allow-btn')).not.toBeNull();
 
+    inspector.domainRules = {
+      'app.example.com': { action: 'allow', memo: '', tags: [] }
+    };
     const allowed = inspector.createDomainItem(
       'app.example.com', { total: 1, types: { DOC: 1 } },
       true, true, false, false, false, false, false
@@ -103,6 +117,9 @@ describe('sidepanel UI logic', () => {
   it('通過・停止フィルタが厳格モードの許可状態を反映する', () => {
     inspector.domainData.mode = 'strict';
     inspector.domainData.allowed_domains = ['allowed.example'];
+    inspector.domainRules = {
+      'allowed.example': { action: 'allow', memo: '', tags: [] }
+    };
     inspector.domainData.domain_counts = {
       'blocked.example': { total: 5, types: { XHR: 5 } },
       'allowed.example': { total: 2, types: { DOC: 2 } }
@@ -113,6 +130,36 @@ describe('sidepanel UI logic', () => {
 
     inspector.trafficFilter = 'passing';
     expect(inspector.getSortedDomains().map(([domain]) => domain)).toEqual(['allowed.example']);
+  });
+
+  it('親ルールを継承し、より具体的な子ルールで上書きする', () => {
+    inspector.domainRules = {
+      'example.com': { action: 'block', memo: '', tags: [] },
+      'api.example.com': { action: 'allow', memo: '', tags: [] }
+    };
+
+    expect(inspector.getEffectivePolicyRule('cdn.example.com')).toEqual({
+      domain: 'example.com', action: 'block', inherited: true, source: 'global'
+    });
+    expect(inspector.isDomainEffectivelyBlocked('cdn.example.com')).toBe(true);
+    expect(inspector.getEffectivePolicyRule('v1.api.example.com')).toEqual({
+      domain: 'api.example.com', action: 'allow', inherited: true, source: 'global'
+    });
+    expect(inspector.isDomainEffectivelyBlocked('v1.api.example.com')).toBe(false);
+  });
+
+  it('親ルール継承を表示し、反対アクションから子ドメイン例外を作れる', () => {
+    inspector.domainRules = {
+      'example.com': { action: 'block', memo: '', tags: [] }
+    };
+    const item = inspector.createDomainItem(
+      'cdn.example.com', { total: 2, types: { JS: 2 } },
+      false, false, true, false, false, false, false
+    );
+
+    expect(item.textContent).toContain('親ルール');
+    expect(item.querySelector('.block-btn.inherited').disabled).toBe(true);
+    expect(item.querySelector('.allow-btn').disabled).toBe(false);
   });
 
   it('通信一覧・統計・ルールグループを実DOMへ描画する', () => {
@@ -126,7 +173,10 @@ describe('sidepanel UI logic', () => {
       mode: 'strict',
       allowed_domains: ['app.example.com'],
       blocking_enabled: true,
-      domain_rules: {}
+      domain_rules: {},
+      site_policy: {
+        site_domain: 'example.com', enabled: false, rules: {}, temporary_allows: {}, precise_scope: true
+      }
     };
     inspector.domainRules = {
       'app.example.com': { action: 'allow', memo: '本体', tags: ['core'] },
@@ -163,6 +213,180 @@ describe('sidepanel UI logic', () => {
     inspector.updateTabPanels();
     expect(document.getElementById('rulesPanel').classList.contains('active')).toBe(true);
     expect(document.getElementById('trafficPanel').classList.contains('active')).toBe(false);
+  });
+
+  it('厳格モードでは一括操作を許可リスト作成へ切り替える', async () => {
+    inspector.domainData.mode = 'strict';
+    inspector.domainData.domain_counts = {
+      'app.example.com': { total: 1, types: { DOC: 1 } },
+      'cdn.example.net': { total: 2, types: { JS: 2 } }
+    };
+    inspector.domainRules = {
+      'app.example.com': { action: 'allow', memo: '', tags: [] }
+    };
+    inspector.confirmAction = async () => true;
+    inspector.showToast = () => {};
+    let sentMessage;
+    inspector.request = async message => {
+      sentMessage = message;
+      return {
+        success: true,
+        blocked_domains: [],
+        allowed_domains: ['app.example.com', 'cdn.example.net'],
+        domain_rules: {
+          ...inspector.domainRules,
+          'cdn.example.net': { action: 'allow', memo: '', tags: [] }
+        }
+      };
+    };
+
+    inspector.updateBulkActions();
+    const button = inspector.testDocument.getElementById('bulkBlockBtn');
+    expect(button.textContent).toContain('表示中を許可');
+    expect(button.classList.contains('bulk-allow')).toBe(true);
+
+    await inspector.bulkPolicyAction();
+    expect(sentMessage).toEqual({ type: 'BULK_ALLOW', domains: ['cdn.example.net'] });
+  });
+
+  it('現在サイトが親ルールから許可されていることをビルダーへ表示する', () => {
+    inspector.domainRules = {
+      'example.com': { action: 'allow', memo: '', tags: [] }
+    };
+    inspector.updatePolicyBuilder();
+
+    const button = inspector.testDocument.getElementById('allowCurrentSiteBtn');
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toContain('example.com から許可');
+  });
+
+  it('サイト専用ポリシーはサイト本体を通し、未登録の外部通信を停止する', () => {
+    inspector.domainData.site_policy = {
+      site_domain: 'example.com',
+      enabled: true,
+      rules: {
+        'example.com': { action: 'allow', memo: 'サイト本体', tags: ['first-party'] }
+      },
+      temporary_allows: {},
+      precise_scope: true
+    };
+
+    expect(inspector.getEffectivePolicyRule('app.example.com')).toMatchObject({
+      domain: 'example.com', action: 'allow', source: 'site'
+    });
+    expect(inspector.isDomainEffectivelyBlocked('app.example.com')).toBe(false);
+    expect(inspector.getEffectivePolicyRule('cdn.external.test')).toMatchObject({
+      domain: 'example.com', action: 'block', source: 'site-default', defaultRule: true
+    });
+    expect(inspector.isDomainEffectivelyBlocked('cdn.external.test')).toBe(true);
+
+    inspector.policyScope = 'site';
+    const origin = inspector.createDomainItem(
+      'app.example.com', { total: 1, types: { DOC: 1 } },
+      true, true, false, false, false, false, false
+    );
+    expect(origin.querySelector('.allow-btn').disabled).toBe(true);
+    expect(origin.querySelector('.block-btn').disabled).toBe(true);
+    expect(origin.querySelector('.temporary-allow-btn').disabled).toBe(true);
+  });
+
+  it('編集範囲をこのサイトへ切り替え、サイト保護を開始できる', async () => {
+    inspector.policyScope = 'site';
+    inspector.showToast = () => {};
+    let sentMessage;
+    inspector.request = async message => {
+      sentMessage = message;
+      return {
+        success: true,
+        site_policy: {
+          site_domain: 'example.com', enabled: true,
+          rules: { 'example.com': { action: 'allow', memo: 'サイト本体', tags: ['first-party'] } },
+          temporary_allows: {}, precise_scope: true
+        }
+      };
+    };
+
+    inspector.updatePolicyBuilder();
+    expect(inspector.testDocument.querySelector('[data-policy-scope="site"]').classList.contains('active')).toBe(true);
+    expect(inspector.testDocument.getElementById('allowCurrentSiteBtn').textContent).toContain('サイト保護を開始');
+
+    await inspector.handlePolicyBuilderAction();
+    expect(sentMessage).toEqual({ type: 'ENABLE_SITE_POLICY', siteDomain: 'example.com' });
+    expect(inspector.domainData.site_policy.enabled).toBe(true);
+  });
+
+  it('サイト範囲の恒久ルールと5分許可を別々に操作する', async () => {
+    inspector.policyScope = 'site';
+    inspector.domainData.site_policy = {
+      site_domain: 'example.com', enabled: true,
+      rules: { 'tracker.test': { action: 'block', memo: '', tags: [] } },
+      temporary_allows: {}, precise_scope: true
+    };
+    inspector.showToast = () => {};
+    const messages = [];
+    inspector.request = async message => {
+      messages.push(message);
+      if (message.type === 'TEMPORARILY_ALLOW_SITE_DOMAIN') {
+        return {
+          success: true,
+          site_policy: {
+            ...inspector.domainData.site_policy,
+            temporary_allows: { 'tracker.test': Date.now() + 300_000 }
+          }
+        };
+      }
+      return {
+        success: true,
+        site_policy: { ...inspector.domainData.site_policy, rules: {} }
+      };
+    };
+
+    await inspector.toggleBlock('tracker.test');
+    expect(messages[0]).toEqual({
+      type: 'DELETE_SITE_RULE', siteDomain: 'example.com', domain: 'tracker.test'
+    });
+
+    inspector.domainData.site_policy.rules = {
+      'tracker.test': { action: 'block', memo: '', tags: [] }
+    };
+    await inspector.toggleTemporaryAllow('tracker.test');
+    expect(messages[1]).toEqual({
+      type: 'TEMPORARILY_ALLOW_SITE_DOMAIN', siteDomain: 'example.com', domain: 'tracker.test'
+    });
+
+    const item = inspector.createDomainItem(
+      'tracker.test', { total: 1, types: { XHR: 1 } },
+      true, true, false, false, false, true, false
+    );
+    expect(item.textContent).toContain('一時');
+    expect(item.querySelector('.temporary-allow-btn.active')).not.toBeNull();
+  });
+
+  it('サイト範囲の一括許可は他サイトに影響しないメッセージを送る', async () => {
+    inspector.policyScope = 'site';
+    inspector.domainData.site_policy = {
+      site_domain: 'example.com', enabled: true,
+      rules: { 'example.com': { action: 'allow', memo: '', tags: [] } },
+      temporary_allows: {}, precise_scope: true
+    };
+    inspector.domainData.domain_counts = {
+      'app.example.com': { total: 1, types: { DOC: 1 } },
+      'cdn.external.test': { total: 2, types: { JS: 2 } }
+    };
+    inspector.confirmAction = async () => true;
+    inspector.showToast = () => {};
+    let sentMessage;
+    inspector.request = async message => {
+      sentMessage = message;
+      return { success: true, site_policy: inspector.domainData.site_policy };
+    };
+
+    await inspector.bulkPolicyAction();
+    expect(sentMessage).toEqual({
+      type: 'BULK_ALLOW_SITE_DOMAINS',
+      siteDomain: 'example.com',
+      domains: ['cdn.external.test']
+    });
   });
 
   it('ルールグループを開閉し、一括選択できる', () => {
@@ -204,6 +428,9 @@ describe('sidepanel UI logic', () => {
       blocking_enabled: true,
       domain_rules: {
         'api.example.com': { action: 'allow', memo: '', tags: [] }
+      },
+      site_policy: {
+        site_domain: 'example.com', enabled: false, rules: {}, temporary_allows: {}, precise_scope: true
       }
     };
 

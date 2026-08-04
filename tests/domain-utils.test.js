@@ -5,6 +5,8 @@ const {
   extractDomain,
   normalizeDomain,
   isValidDomain,
+  matchesDomainRule,
+  findMostSpecificDomainRule,
   getShortType,
   isLikelyAd,
   isLikelySafe,
@@ -66,6 +68,21 @@ describe('normalizeDomain', () => {
     expect(normalizeDomain('__proto__')).toBeNull();
     expect(isValidDomain('example.com')).toBe(true);
     expect(isValidDomain('-invalid.example')).toBe(false);
+  });
+});
+
+describe('domain rule matching', () => {
+  it('DNRと同じく親ドメインをサブドメインにも適用する', () => {
+    expect(matchesDomainRule('api.example.com', 'example.com')).toBe(true);
+    expect(matchesDomainRule('example.com', 'example.com')).toBe(true);
+    expect(matchesDomainRule('notexample.com', 'example.com')).toBe(false);
+  });
+
+  it('一致する中で最も具体的なルールドメインを返す', () => {
+    expect(findMostSpecificDomainRule('v1.api.example.com', [
+      'example.com', 'api.example.com', 'other.example'
+    ])).toBe('api.example.com');
+    expect(findMostSpecificDomainRule('unmatched.example', ['example.com'])).toBeNull();
   });
 });
 

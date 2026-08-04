@@ -5,17 +5,32 @@ importScripts('lib/domain-utils.js');
 const tabData = new Map();
 const TAB_DATA_STORAGE_KEY = 'tabData';
 
-// 許可ドメインリスト（厳格モード用）
+// 許可ドメインリスト（厳格モードおよび親ブロックの例外用）
 let allowedDomains = new Set();
 
 // ドメインルール（メタデータ層）
 let domainRules = Object.create(null);
+
+// 閲覧サイトごとの厳格ポリシー。キーは登録ドメイン、値はサイト内だけで有効なルール。
+let sitePolicies = Object.create(null);
+const SITE_POLICIES_STORAGE_KEY = 'sitePolicies';
 
 // 動的ルールのIDカウンター（Service Worker再起動対策）
 let ruleIdCounter = 1000;
 
 // 厳格モードのブロックルールID（固定）
 const STRICT_MODE_BLOCK_RULE_ID = 1;
+const POLICY_RULE_ID_START = 1000;
+const POLICY_PRIORITY_BASE = 100;
+const SITE_DEFAULT_PRIORITY = 10000;
+const SITE_POLICY_PRIORITY_BASE = 11000;
+const TEMPORARY_ALLOW_PRIORITY_BASE = 12000;
+const TEMPORARY_ALLOW_MINUTES = 5;
+const TEMPORARY_ALLOW_ALARM_PREFIX = 'temporary-allow:';
+const TOP_DOMAINS_MIN_CHROME_VERSION = 145;
+// Chrome 114〜119 の動的ルール上限5000件から厳格モード用の1件を予約する。
+const MAX_POLICY_RULES = 4999;
+const MAX_DYNAMIC_RULES = 5000;
 
 // 監視対象リソースタイプ（共通定数）
 const ALL_RESOURCE_TYPES = [
@@ -55,6 +70,118 @@ async function loadDomainRules() {
   domainRules = sanitizeRuleMap(result.domainRules);
 }
 
+function getChromeMajorVersion() {
+  if (typeof navigator === 'undefined') return 0;
+  const brands = navigator.userAgentData?.brands || [];
+  const chromiumBrand = brands.find(brand => /Chromium|Google Chrome/.test(brand.brand));
+  if (chromiumBrand) return Number.parseInt(chromiumBrand.version, 10) || 0;
+  const match = navigator.userAgent?.match(/Chrom(?:e|ium)\/(\d+)/);
+  return match ? Number.parseInt(match[1], 10) : 0;
+}
+
+function supportsTopDomainRules() {
+  return getChromeMajorVersion() >= TOP_DOMAINS_MIN_CHROME_VERSION;
+}
+
+function getSiteDomain(value) {
+  const domain = normalizeDomain(value);
+  return domain ? getDomainRoot(domain) : null;
+}
+
+function sanitizeTemporaryAllows(value) {
+  const sanitized = Object.create(null);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return sanitized;
+  for (const [rawDomain, rawExpiresAt] of Object.entries(value)) {
+    const domain = normalizeDomain(rawDomain);
+    const expiresAt = Number(rawExpiresAt);
+    if (domain && Number.isFinite(expiresAt) && expiresAt > 0) sanitized[domain] = expiresAt;
+  }
+  return sanitized;
+}
+
+function sanitizeSitePolicies(value) {
+  const sanitized = Object.create(null);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return sanitized;
+  for (const [rawSiteDomain, rawPolicy] of Object.entries(value)) {
+    const siteDomain = getSiteDomain(rawSiteDomain);
+    if (!siteDomain || !rawPolicy || typeof rawPolicy !== 'object') continue;
+    sanitized[siteDomain] = {
+      enabled: rawPolicy.enabled === true,
+      rules: sanitizeRuleMap(rawPolicy.rules),
+      temporaryAllows: sanitizeTemporaryAllows(rawPolicy.temporaryAllows)
+    };
+  }
+  return sanitized;
+}
+
+async function loadSitePolicies() {
+  const result = await chrome.storage.local.get([SITE_POLICIES_STORAGE_KEY]);
+  sitePolicies = sanitizeSitePolicies(result[SITE_POLICIES_STORAGE_KEY]);
+}
+
+async function saveSitePolicies() {
+  await chrome.storage.local.set({ [SITE_POLICIES_STORAGE_KEY]: sitePolicies });
+}
+
+function getTemporaryAllowAlarmName(siteDomain, domain) {
+  return `${TEMPORARY_ALLOW_ALARM_PREFIX}${encodeURIComponent(siteDomain)}:${encodeURIComponent(domain)}`;
+}
+
+function parseTemporaryAllowAlarmName(name) {
+  if (!name.startsWith(TEMPORARY_ALLOW_ALARM_PREFIX)) return null;
+  const parts = name.slice(TEMPORARY_ALLOW_ALARM_PREFIX.length).split(':');
+  if (parts.length !== 2) return null;
+  try {
+    return { siteDomain: decodeURIComponent(parts[0]), domain: decodeURIComponent(parts[1]) };
+  } catch {
+    return null;
+  }
+}
+
+function purgeExpiredTemporaryAllows(now = Date.now()) {
+  let changed = false;
+  for (const policy of Object.values(sitePolicies)) {
+    for (const [domain, expiresAt] of Object.entries(policy.temporaryAllows)) {
+      if (expiresAt <= now) {
+        delete policy.temporaryAllows[domain];
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+async function syncTemporaryAllowAlarms() {
+  const expected = new Map();
+  for (const [siteDomain, policy] of Object.entries(sitePolicies)) {
+    for (const [domain, expiresAt] of Object.entries(policy.temporaryAllows)) {
+      expected.set(getTemporaryAllowAlarmName(siteDomain, domain), expiresAt);
+    }
+  }
+
+  const existing = await chrome.alarms.getAll();
+  for (const alarm of existing) {
+    if (alarm.name.startsWith(TEMPORARY_ALLOW_ALARM_PREFIX) && !expected.has(alarm.name)) {
+      await chrome.alarms.clear(alarm.name);
+    }
+  }
+  for (const [name, when] of expected) {
+    await chrome.alarms.create(name, { when });
+  }
+}
+
+function getSitePolicyState(mainDomain) {
+  const siteDomain = getSiteDomain(mainDomain);
+  const policy = siteDomain ? sitePolicies[siteDomain] : null;
+  return {
+    site_domain: siteDomain,
+    enabled: Boolean(policy?.enabled),
+    rules: policy?.rules || Object.create(null),
+    temporary_allows: policy?.temporaryAllows || Object.create(null),
+    precise_scope: supportsTopDomainRules()
+  };
+}
+
 function sanitizeRule(rule) {
   if (!rule || typeof rule !== 'object') return null;
   if (rule.action !== 'block' && rule.action !== 'allow') return null;
@@ -89,7 +216,7 @@ function requireDomain(value) {
 }
 
 function requireDomainList(value) {
-  if (!Array.isArray(value) || value.length > 5000) {
+  if (!Array.isArray(value) || value.length > MAX_POLICY_RULES) {
     throw new Error('ドメイン一覧が不正です');
   }
   return [...new Set(value.map(requireDomain))];
@@ -100,7 +227,7 @@ function requireRuleMap(value) {
     throw new Error('ルールデータが不正です');
   }
   const entries = Object.entries(value);
-  if (entries.length === 0 || entries.length > 5000) {
+  if (entries.length === 0 || entries.length > MAX_POLICY_RULES) {
     throw new Error('ルール件数が不正です');
   }
 
@@ -172,10 +299,15 @@ function cloneDomainRules(value = domainRules) {
   return sanitizeRuleMap(JSON.parse(JSON.stringify(value)));
 }
 
+function cloneSitePolicies(value = sitePolicies) {
+  return sanitizeSitePolicies(JSON.parse(JSON.stringify(value)));
+}
+
 async function capturePolicySnapshot() {
   return {
     allowedDomains: Array.from(allowedDomains),
     domainRules: cloneDomainRules(),
+    sitePolicies: cloneSitePolicies(),
     currentMode,
     blockingEnabled,
     ruleIdCounter,
@@ -192,6 +324,7 @@ async function restorePolicySnapshot(snapshot) {
 
   allowedDomains = new Set(snapshot.allowedDomains);
   domainRules = cloneDomainRules(snapshot.domainRules);
+  sitePolicies = cloneSitePolicies(snapshot.sitePolicies);
   currentMode = snapshot.currentMode;
   blockingEnabled = snapshot.blockingEnabled;
   ruleIdCounter = snapshot.ruleIdCounter;
@@ -201,9 +334,11 @@ async function restorePolicySnapshot(snapshot) {
   await chrome.storage.local.set({
     allowedDomains: snapshot.allowedDomains,
     domainRules,
+    [SITE_POLICIES_STORAGE_KEY]: sitePolicies,
     currentMode,
     blockingEnabled
   });
+  await syncTemporaryAllowAlarms();
   updateIconBadge();
 }
 
@@ -225,6 +360,138 @@ function runPolicyMutation(operation) {
 
   policyMutationQueue = mutation.catch(() => {});
   return mutation;
+}
+
+function getPolicyPriority(domain) {
+  // DNR は同じ拡張機能内では数値の大きい priority を優先する。
+  // ラベル数を加えることで、親ドメインより具体的な子ドメインの例外を優先する。
+  return POLICY_PRIORITY_BASE + domain.split('.').length;
+}
+
+function createPolicyDnrRule(domain, action) {
+  return {
+    id: ruleIdCounter++,
+    priority: getPolicyPriority(domain),
+    action: { type: action },
+    condition: {
+      requestDomains: [domain],
+      resourceTypes: ALL_RESOURCE_TYPES
+    }
+  };
+}
+
+function createSiteScopeCondition(siteDomain) {
+  return supportsTopDomainRules()
+    ? { topDomains: [siteDomain] }
+    : { initiatorDomains: [siteDomain] };
+}
+
+function createSitePolicyDnrRules(siteDomain, policy) {
+  if (!policy.enabled) return [];
+  const scopeCondition = createSiteScopeCondition(siteDomain);
+  const rules = [{
+    id: ruleIdCounter++,
+    priority: SITE_DEFAULT_PRIORITY,
+    action: { type: 'block' },
+    condition: {
+      ...scopeCondition,
+      resourceTypes: ALL_RESOURCE_TYPES
+    }
+  }];
+
+  for (const [domain, rule] of Object.entries(policy.rules)) {
+    rules.push({
+      id: ruleIdCounter++,
+      priority: SITE_POLICY_PRIORITY_BASE + domain.split('.').length,
+      action: { type: rule.action },
+      condition: {
+        ...scopeCondition,
+        requestDomains: [domain],
+        resourceTypes: ALL_RESOURCE_TYPES
+      }
+    });
+  }
+
+  for (const domain of Object.keys(policy.temporaryAllows)) {
+    rules.push({
+      id: ruleIdCounter++,
+      priority: TEMPORARY_ALLOW_PRIORITY_BASE + domain.split('.').length,
+      action: { type: 'allow' },
+      condition: {
+        ...scopeCondition,
+        requestDomains: [domain],
+        resourceTypes: ALL_RESOURCE_TYPES
+      }
+    });
+  }
+  return rules;
+}
+
+function isGlobalPolicyDnrRule(rule) {
+  return rule.id !== STRICT_MODE_BLOCK_RULE_ID &&
+    (rule.action?.type === 'block' || rule.action?.type === 'allow') &&
+    Array.isArray(rule.condition?.requestDomains) &&
+    !rule.condition.topDomains && !rule.condition.initiatorDomains;
+}
+
+async function replacePolicyDnrRule(domain, action) {
+  if (!blockingEnabled) return;
+  const rules = await chrome.declarativeNetRequest.getDynamicRules();
+  const removeRuleIds = rules
+    .filter(rule => isGlobalPolicyDnrRule(rule) && rule.condition.requestDomains.includes(domain))
+    .map(rule => rule.id);
+  await chrome.declarativeNetRequest.updateDynamicRules({
+    removeRuleIds,
+    addRules: [createPolicyDnrRule(domain, action)]
+  });
+  invalidateBlockedDomainsCache();
+}
+
+async function removePolicyDnrRule(domain, action) {
+  if (!blockingEnabled) return;
+  const rules = await chrome.declarativeNetRequest.getDynamicRules();
+  const removeRuleIds = rules
+    .filter(rule => isGlobalPolicyDnrRule(rule) &&
+      rule.action.type === action &&
+      rule.condition.requestDomains.includes(domain))
+    .map(rule => rule.id);
+  if (removeRuleIds.length > 0) {
+    await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds });
+    invalidateBlockedDomainsCache();
+  }
+}
+
+async function rebuildDynamicRules() {
+  const currentRules = await chrome.declarativeNetRequest.getDynamicRules();
+  const removeRuleIds = currentRules.map(rule => rule.id);
+  const addRules = [];
+
+  ruleIdCounter = POLICY_RULE_ID_START;
+  if (blockingEnabled) {
+    if (currentMode === 'strict') {
+      addRules.push({
+        id: STRICT_MODE_BLOCK_RULE_ID,
+        priority: 1,
+        action: { type: 'block' },
+        condition: { resourceTypes: ALL_RESOURCE_TYPES }
+      });
+    }
+    for (const [domain, rule] of Object.entries(domainRules)) {
+      addRules.push(createPolicyDnrRule(domain, rule.action));
+    }
+    for (const [siteDomain, policy] of Object.entries(sitePolicies)) {
+      addRules.push(...createSitePolicyDnrRules(siteDomain, policy));
+    }
+  }
+
+  if (addRules.length > MAX_DYNAMIC_RULES) {
+    throw new Error(`有効な通信ルールが上限${MAX_DYNAMIC_RULES}件を超えています`);
+  }
+
+  if (removeRuleIds.length > 0 || addRules.length > 0) {
+    await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules });
+    invalidateBlockedDomainsCache();
+  }
 }
 
 // 初期化時に既存のルールを確認し、ルールIDカウンターを設定
@@ -254,6 +521,7 @@ async function initialize() {
 
     // domainRulesを読み込み
     await loadDomainRules();
+    await loadSitePolicies();
     await restoreTabData();
 
     // マイグレーション（初回のみ）
@@ -263,17 +531,11 @@ async function initialize() {
       await chrome.storage.local.set({ migrationDone: true });
     }
 
-    // 保存済みの厳格ルールを現在の許可リストと同期し、停止状態もDNRへ反映する。
-    if (!blockingEnabled) {
-      const currentRules = await chrome.declarativeNetRequest.getDynamicRules();
-      const ruleIds = currentRules.map(rule => rule.id);
-      if (ruleIds.length > 0) {
-        await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: ruleIds });
-        invalidateBlockedDomainsCache();
-      }
-    } else if (currentMode === 'strict') {
-      await updateStrictModeRule();
-    }
+    await reconcilePolicyState();
+    if (purgeExpiredTemporaryAllows()) await saveSitePolicies();
+    await syncTemporaryAllowAlarms();
+    // 保存状態を正としてDNRを再構築し、旧バージョンの優先度や許可方式も更新する。
+    await rebuildDynamicRules();
 
     // アイコンバッジを更新
     updateIconBadge();
@@ -296,7 +558,7 @@ async function migrateToRules(existingRules) {
 
   // declarativeNetRequestの既存ブロックルール → action: "block"
   for (const rule of existingRules) {
-    if (rule.id === STRICT_MODE_BLOCK_RULE_ID) continue;
+    if (rule.id === STRICT_MODE_BLOCK_RULE_ID || rule.action?.type !== 'block') continue;
     if (rule.condition.requestDomains) {
       for (const domain of rule.condition.requestDomains) {
         if (!domainRules[domain]) {
@@ -352,17 +614,7 @@ function updateIconBadge() {
 async function enableBlocking() {
   blockingEnabled = true;
   try {
-    // domainRulesからブロックルールを復元
-    for (const [domain, rule] of Object.entries(domainRules)) {
-      if (rule.action === 'block') {
-        await blockDomain(domain);
-      }
-    }
-
-    // 厳格モードの場合はルールを再適用
-    if (currentMode === 'strict') {
-      await updateStrictModeRule();
-    }
+    await rebuildDynamicRules();
 
     await saveBlockingEnabled();
     updateIconBadge();
@@ -382,6 +634,31 @@ async function enableBlocking() {
     updateIconBadge();
     throw error;
   }
+}
+
+async function reconcilePolicyState() {
+  let rulesChanged = false;
+  let allowedChanged = false;
+
+  for (const domain of allowedDomains) {
+    if (!domainRules[domain]) {
+      domainRules[domain] = { action: 'allow', memo: '', tags: [] };
+      rulesChanged = true;
+    }
+  }
+
+  const canonicalAllowed = new Set();
+  for (const [domain, rule] of Object.entries(domainRules)) {
+    if (rule.action === 'allow') canonicalAllowed.add(domain);
+  }
+  if (canonicalAllowed.size !== allowedDomains.size ||
+      [...canonicalAllowed].some(domain => !allowedDomains.has(domain))) {
+    allowedDomains = canonicalAllowed;
+    allowedChanged = true;
+  }
+
+  if (rulesChanged) await saveDomainRules();
+  if (allowedChanged) await saveAllowedDomains();
 }
 
 // ブロック機能を無効化（すべてのルールを一時的に削除）
@@ -434,16 +711,10 @@ async function disableStrictMode() {
   await saveCurrentMode();
 }
 
-// 厳格モードでドメインを許可
+// ドメインを許可（厳格モードまたは親ブロックの例外）
 async function allowDomain(domain) {
   domain = requireDomain(domain);
   allowedDomains.add(domain);
-  await saveAllowedDomains();
-
-  // ブロックリストから削除（相互排他）
-  if (await isBlockedDomain(domain)) {
-    await unblockDomain(domain);
-  }
 
   // domainRulesに同期
   if (!domainRules[domain]) {
@@ -451,12 +722,9 @@ async function allowDomain(domain) {
   } else {
     domainRules[domain].action = 'allow';
   }
+  await saveAllowedDomains();
   await saveDomainRules();
-
-  // ルールを更新
-  if (currentMode === 'strict') {
-    await updateStrictModeRule();
-  }
+  await replacePolicyDnrRule(domain, 'allow');
 }
 
 // ドメインがブロックされているか確認
@@ -464,13 +732,13 @@ async function isBlockedDomain(domain) {
   domain = requireDomain(domain);
   const rules = await chrome.declarativeNetRequest.getDynamicRules();
   return rules.some(r =>
-    r.id !== STRICT_MODE_BLOCK_RULE_ID &&
+    isGlobalPolicyDnrRule(r) && r.action.type === 'block' &&
     r.condition.requestDomains &&
     r.condition.requestDomains.includes(domain)
   );
 }
 
-// 厳格モードでドメインの許可を取り消し
+// ドメインの許可を取り消し
 async function disallowDomain(domain) {
   domain = requireDomain(domain);
   allowedDomains.delete(domain);
@@ -480,11 +748,7 @@ async function disallowDomain(domain) {
     delete domainRules[domain];
     await saveDomainRules();
   }
-
-  // ルールを更新
-  if (currentMode === 'strict') {
-    await updateStrictModeRule();
-  }
+  await removePolicyDnrRule(domain, 'allow');
 }
 
 // 厳格モードのルールを更新
@@ -492,24 +756,137 @@ async function updateStrictModeRule() {
   const update = { removeRuleIds: [STRICT_MODE_BLOCK_RULE_ID] };
 
   if (blockingEnabled && currentMode === 'strict') {
-    const condition = {
-      resourceTypes: ALL_RESOURCE_TYPES
-    };
-    const excludedRequestDomains = Array.from(allowedDomains);
-    if (excludedRequestDomains.length > 0) {
-      condition.excludedRequestDomains = excludedRequestDomains;
-    }
-
     update.addRules = [{
       id: STRICT_MODE_BLOCK_RULE_ID,
       priority: 1,
       action: { type: 'block' },
-      condition
+      condition: { resourceTypes: ALL_RESOURCE_TYPES }
     }];
   }
 
   await chrome.declarativeNetRequest.updateDynamicRules(update);
   invalidateBlockedDomainsCache();
+}
+
+function requireSiteDomain(value) {
+  const siteDomain = getSiteDomain(value);
+  if (!siteDomain) throw new Error('対象サイトが不正です');
+  return siteDomain;
+}
+
+function ensureSitePolicy(siteDomain) {
+  if (!sitePolicies[siteDomain]) {
+    sitePolicies[siteDomain] = {
+      enabled: false,
+      rules: Object.create(null),
+      temporaryAllows: Object.create(null)
+    };
+  }
+  return sitePolicies[siteDomain];
+}
+
+async function enableSitePolicy(rawSiteDomain) {
+  const siteDomain = requireSiteDomain(rawSiteDomain);
+  const policy = ensureSitePolicy(siteDomain);
+  policy.enabled = true;
+  // サイト本体は起点として必ず通し、外部依存だけを既定停止する。
+  policy.rules[siteDomain] = {
+    action: 'allow',
+    memo: policy.rules[siteDomain]?.memo || 'サイト本体',
+    tags: policy.rules[siteDomain]?.tags || ['first-party']
+  };
+  await saveSitePolicies();
+  await rebuildDynamicRules();
+  return getSitePolicyState(siteDomain);
+}
+
+async function disableSitePolicy(rawSiteDomain) {
+  const siteDomain = requireSiteDomain(rawSiteDomain);
+  const policy = ensureSitePolicy(siteDomain);
+  policy.enabled = false;
+  await saveSitePolicies();
+  await rebuildDynamicRules();
+  return getSitePolicyState(siteDomain);
+}
+
+async function setSiteRule(rawSiteDomain, rawDomain, action) {
+  const siteDomain = requireSiteDomain(rawSiteDomain);
+  const domain = requireDomain(rawDomain);
+  if (action !== 'allow' && action !== 'block') throw new Error('アクションが不正です');
+  const policy = ensureSitePolicy(siteDomain);
+  if (!policy.enabled) throw new Error('先にサイト保護を有効にしてください');
+  if (domain === siteDomain && action !== 'allow') {
+    throw new Error('サイト本体はサイト保護の起点として許可されます');
+  }
+  const existing = policy.rules[domain];
+  policy.rules[domain] = {
+    action,
+    memo: existing?.memo || '',
+    tags: existing?.tags || []
+  };
+  delete policy.temporaryAllows[domain];
+  await saveSitePolicies();
+  await syncTemporaryAllowAlarms();
+  await rebuildDynamicRules();
+  return getSitePolicyState(siteDomain);
+}
+
+async function deleteSiteRule(rawSiteDomain, rawDomain) {
+  const siteDomain = requireSiteDomain(rawSiteDomain);
+  const domain = requireDomain(rawDomain);
+  const policy = ensureSitePolicy(siteDomain);
+  if (domain === siteDomain && policy.enabled) {
+    throw new Error('サイト本体の許可ルールはサイト保護中に削除できません');
+  }
+  delete policy.rules[domain];
+  delete policy.temporaryAllows[domain];
+  await saveSitePolicies();
+  await syncTemporaryAllowAlarms();
+  await rebuildDynamicRules();
+  return getSitePolicyState(siteDomain);
+}
+
+async function bulkAllowSiteDomains(rawSiteDomain, rawDomains) {
+  const siteDomain = requireSiteDomain(rawSiteDomain);
+  const domains = requireDomainList(rawDomains);
+  const policy = ensureSitePolicy(siteDomain);
+  if (!policy.enabled) throw new Error('先にサイト保護を有効にしてください');
+  for (const domain of domains) {
+    const existing = policy.rules[domain];
+    policy.rules[domain] = {
+      action: 'allow',
+      memo: existing?.memo || '',
+      tags: existing?.tags || []
+    };
+    delete policy.temporaryAllows[domain];
+  }
+  await saveSitePolicies();
+  await syncTemporaryAllowAlarms();
+  await rebuildDynamicRules();
+  return getSitePolicyState(siteDomain);
+}
+
+async function temporarilyAllowSiteDomain(rawSiteDomain, rawDomain) {
+  const siteDomain = requireSiteDomain(rawSiteDomain);
+  const domain = requireDomain(rawDomain);
+  const policy = ensureSitePolicy(siteDomain);
+  if (!policy.enabled) throw new Error('先にサイト保護を有効にしてください');
+  policy.temporaryAllows[domain] = Date.now() + TEMPORARY_ALLOW_MINUTES * 60 * 1000;
+  await saveSitePolicies();
+  await syncTemporaryAllowAlarms();
+  await rebuildDynamicRules();
+  return getSitePolicyState(siteDomain);
+}
+
+async function removeTemporarySiteAllow(rawSiteDomain, rawDomain) {
+  const siteDomain = requireSiteDomain(rawSiteDomain);
+  const domain = requireDomain(rawDomain);
+  const policy = ensureSitePolicy(siteDomain);
+  delete policy.temporaryAllows[domain];
+  await saveSitePolicies();
+  await syncTemporaryAllowAlarms();
+  await rebuildDynamicRules();
+  return getSitePolicyState(siteDomain);
 }
 
 // 初期化を実行
@@ -547,7 +924,8 @@ function scheduleUpdate(tabId, data) {
           blocked_domains: blockedDomains,
           mode: currentMode,
           allowed_domains: Array.from(allowedDomains),
-          blocking_enabled: blockingEnabled
+          blocking_enabled: blockingEnabled,
+          site_policy: getSitePolicyState(data.main_domain)
         }
       };
       // domainRulesは変更時のみ含める
@@ -615,72 +993,17 @@ async function blockDomain(domain) {
   domain = requireDomain(domain);
 
   // 許可リストから削除（相互排他）
-  if (allowedDomains.has(domain)) {
-    allowedDomains.delete(domain);
+  if (allowedDomains.delete(domain)) {
     await saveAllowedDomains();
-    // 厳格モードの場合はルールも更新
-    if (currentMode === 'strict') {
-      await updateStrictModeRule();
-    }
   }
 
-  // グローバル停止中はルールの意図だけを保存し、DNRには適用しない。
-  if (!blockingEnabled) {
-    domainRules[domain] = {
-      action: 'block',
-      memo: domainRules[domain]?.memo || '',
-      tags: domainRules[domain]?.tags || []
-    };
-    await saveDomainRules();
-    return;
-  }
-
-  // 既にブロック済みか確認
-  const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
-  const existingRule = existingRules.find(r =>
-    r.id !== STRICT_MODE_BLOCK_RULE_ID &&
-    r.condition.requestDomains && r.condition.requestDomains.includes(domain)
-  );
-  if (existingRule) {
-    // domainRulesは同期しておく
-    if (!domainRules[domain]) {
-      domainRules[domain] = { action: 'block', memo: '', tags: [] };
-      await saveDomainRules();
-    } else if (domainRules[domain].action !== 'block') {
-      domainRules[domain].action = 'block';
-      await saveDomainRules();
-    }
-    return;
-  }
-
-  const ruleId = ruleIdCounter++;
-
-  try {
-    await chrome.declarativeNetRequest.updateDynamicRules({
-      addRules: [{
-        id: ruleId,
-        priority: 2,  // 厳格モードのルールより高い優先度
-        action: { type: 'block' },
-        condition: {
-          requestDomains: [domain],
-          resourceTypes: ALL_RESOURCE_TYPES
-        }
-      }]
-    });
-    invalidateBlockedDomainsCache();
-
-    // domainRulesに同期
-    if (!domainRules[domain]) {
-      domainRules[domain] = { action: 'block', memo: '', tags: [] };
-    } else {
-      domainRules[domain].action = 'block';
-    }
-    await saveDomainRules();
-
-  } catch (error) {
-    console.error('Failed to block domain:', error);
-    throw error;
-  }
+  domainRules[domain] = {
+    action: 'block',
+    memo: domainRules[domain]?.memo || '',
+    tags: domainRules[domain]?.tags || []
+  };
+  await saveDomainRules();
+  await replacePolicyDnrRule(domain, 'block');
 }
 
 // ドメインのブロックを解除
@@ -688,22 +1011,7 @@ async function unblockDomain(domain) {
   await initialize();
   domain = requireDomain(domain);
 
-  // 現在のルールから該当ドメインのルールを探す
-  const rules = await chrome.declarativeNetRequest.getDynamicRules();
-  const ruleToRemove = rules.find(r =>
-    r.id !== STRICT_MODE_BLOCK_RULE_ID &&
-    r.condition.requestDomains && r.condition.requestDomains.includes(domain)
-  );
-
-  if (!ruleToRemove) {
-    return;
-  }
-
-  await chrome.declarativeNetRequest.updateDynamicRules({
-    removeRuleIds: [ruleToRemove.id]
-  });
-  invalidateBlockedDomainsCache();
-
+  await removePolicyDnrRule(domain, 'block');
 }
 
 // ブロックドメインキャッシュを無効化
@@ -717,7 +1025,7 @@ async function getBlockedDomains() {
   const rules = await chrome.declarativeNetRequest.getDynamicRules();
   const domains = [];
   rules.forEach(rule => {
-    if (rule.condition.requestDomains) {
+    if (isGlobalPolicyDnrRule(rule) && rule.action.type === 'block') {
       domains.push(...rule.condition.requestDomains);
     }
   });
@@ -773,7 +1081,8 @@ const messageHandlers = {
       mode: currentMode,
       allowed_domains: Array.from(allowedDomains),
       blocking_enabled: blockingEnabled,
-      domain_rules: domainRules
+      domain_rules: domainRules,
+      site_policy: getSitePolicyState(data?.main_domain)
     };
   },
 
@@ -785,9 +1094,8 @@ const messageHandlers = {
   UNBLOCK_DOMAIN: async (msg) => {
     const domain = requireDomain(msg.domain);
     await unblockDomain(domain);
-    // メタデータ（メモ・タグ）がないルールは削除、あるものは保持
-    const rule = domainRules[domain];
-    if (rule && !rule.memo && (!rule.tags || rule.tags.length === 0)) {
+    // 非アクティブなルール型は持たないため、解除時はメタデータごと削除する。
+    if (domainRules[domain]?.action === 'block') {
       delete domainRules[domain];
       await saveDomainRules();
     }
@@ -807,6 +1115,48 @@ const messageHandlers = {
     }
     return fullStateResponse();
   },
+
+  BULK_ALLOW: async (msg) => {
+    for (const domain of requireDomainList(msg.domains)) {
+      await allowDomain(domain);
+    }
+    return fullStateResponse();
+  },
+
+  ENABLE_SITE_POLICY: async (msg) => ({
+    success: true,
+    site_policy: await enableSitePolicy(msg.siteDomain)
+  }),
+
+  DISABLE_SITE_POLICY: async (msg) => ({
+    success: true,
+    site_policy: await disableSitePolicy(msg.siteDomain)
+  }),
+
+  SET_SITE_RULE: async (msg) => ({
+    success: true,
+    site_policy: await setSiteRule(msg.siteDomain, msg.domain, msg.action)
+  }),
+
+  DELETE_SITE_RULE: async (msg) => ({
+    success: true,
+    site_policy: await deleteSiteRule(msg.siteDomain, msg.domain)
+  }),
+
+  BULK_ALLOW_SITE_DOMAINS: async (msg) => ({
+    success: true,
+    site_policy: await bulkAllowSiteDomains(msg.siteDomain, msg.domains)
+  }),
+
+  TEMPORARILY_ALLOW_SITE_DOMAIN: async (msg) => ({
+    success: true,
+    site_policy: await temporarilyAllowSiteDomain(msg.siteDomain, msg.domain)
+  }),
+
+  REMOVE_TEMPORARY_SITE_ALLOW: async (msg) => ({
+    success: true,
+    site_policy: await removeTemporarySiteAllow(msg.siteDomain, msg.domain)
+  }),
 
   GET_MODE: async () => ({
     mode: currentMode,
@@ -950,7 +1300,9 @@ const messageHandlers = {
 
 const POLICY_MUTATION_TYPES = new Set([
   'ENABLE_BLOCKING', 'DISABLE_BLOCKING',
-  'BLOCK_DOMAIN', 'UNBLOCK_DOMAIN', 'BULK_BLOCK',
+  'BLOCK_DOMAIN', 'UNBLOCK_DOMAIN', 'BULK_BLOCK', 'BULK_ALLOW',
+  'ENABLE_SITE_POLICY', 'DISABLE_SITE_POLICY', 'SET_SITE_RULE', 'DELETE_SITE_RULE',
+  'BULK_ALLOW_SITE_DOMAINS', 'TEMPORARILY_ALLOW_SITE_DOMAIN', 'REMOVE_TEMPORARY_SITE_ALLOW',
   'SET_MODE', 'ALLOW_DOMAIN', 'DISALLOW_DOMAIN',
   'UPDATE_RULE_META', 'SET_RULE_ACTION', 'DELETE_RULE',
   'BULK_UPDATE_TAGS', 'IMPORT_RULES', 'BULK_DELETE_RULES', 'ADD_RULE'
@@ -971,6 +1323,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: false, error: err.message });
     });
   return true;
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  const target = parseTemporaryAllowAlarmName(alarm.name);
+  if (!target) return;
+  initialize()
+    .then(() => runPolicyMutation(async () => {
+      const policy = sitePolicies[target.siteDomain];
+      const expiresAt = policy?.temporaryAllows?.[target.domain];
+      if (!expiresAt) return;
+      if (expiresAt > Date.now()) {
+        await syncTemporaryAllowAlarms();
+        return;
+      }
+      delete policy.temporaryAllows[target.domain];
+      await saveSitePolicies();
+      await syncTemporaryAllowAlarms();
+      await rebuildDynamicRules();
+      chrome.runtime.sendMessage({
+        type: 'SITE_POLICY_UPDATED',
+        siteDomain: target.siteDomain,
+        sitePolicy: getSitePolicyState(target.siteDomain)
+      }).catch(() => {});
+    }))
+    .catch(error => console.error('Failed to expire temporary allow:', error));
 });
 
 // 拡張機能アイコンクリックでサイドパネルを開く

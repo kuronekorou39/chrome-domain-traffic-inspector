@@ -67,6 +67,27 @@
       </div>
     </section>
 
+    <section class="policy-builder" id="policyBuilder" aria-labelledby="policyBuilderTitle">
+      <div class="policy-builder-copy">
+        <div class="policy-builder-topline">
+          <span class="policy-builder-kicker" id="policyBuilderKicker">ALLOWLIST BUILDER</span>
+          <div class="policy-scope-switch" role="group" aria-label="編集するルールの範囲">
+            <button type="button" class="policy-scope-btn active" data-policy-scope="global" aria-pressed="true">全タブ</button>
+            <button type="button" class="policy-scope-btn" data-policy-scope="site" aria-pressed="false">このサイト</button>
+          </div>
+        </div>
+        <strong id="policyBuilderTitle">現在のサイトを起点にする</strong>
+        <span class="policy-builder-hint" id="policyBuilderHint">先に許可しておくと、厳格モードで必要な外部通信を段階的に追加できます</span>
+      </div>
+      <button id="allowCurrentSiteBtn" class="current-site-allow-btn" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"/>
+          <path d="m8.5 12 2.3 2.3 4.7-4.8"/>
+        </svg>
+        <span>現在サイトを許可</span>
+      </button>
+    </section>
+
     <nav class="tabs" role="tablist" aria-label="表示内容">
       <button id="trafficTab" class="tab-btn active" data-tab="traffic" role="tab" aria-selected="true" aria-controls="trafficPanel">トラフィック</button>
       <button id="rulesTab" class="tab-btn" data-tab="rules" role="tab" aria-selected="false" aria-controls="rulesPanel">ルール <span class="tab-count" id="rulesTabCount">0</span></button>

@@ -13,13 +13,17 @@ function createHarness({
   tabUrl = 'https://example.com/path',
   initialLocal = {},
   initialSession = {},
-  initialRules = []
+  initialRules = [],
+  now = 1_800_000_000_000,
+  userAgent = 'Mozilla/5.0 Chrome/150.0.0.0'
 } = {}) {
   const localStore = JSON.parse(JSON.stringify(initialLocal));
   const sessionStore = JSON.parse(JSON.stringify(initialSession));
   let dynamicRules = JSON.parse(JSON.stringify(initialRules));
+  const alarms = new Map();
   let messageListener;
   let dnrUpdatesBeforeFailure = null;
+  let currentTime = now;
   const listeners = {};
 
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -34,6 +38,14 @@ function createHarness({
     addListener(listener) { listeners[name] = listener; }
   });
   const chrome = {
+    alarms: {
+      async getAll() {
+        return [...alarms.entries()].map(([name, scheduledTime]) => ({ name, scheduledTime }));
+      },
+      async create(name, options) { alarms.set(name, options.when); },
+      async clear(name) { return alarms.delete(name); },
+      onAlarm: event('alarm')
+    },
     storage: {
       local: {
         async get(keys) { return getValues(localStore, keys); },
@@ -88,6 +100,10 @@ function createHarness({
 
   const context = vm.createContext({
     chrome,
+    Date: class extends Date {
+      static now() { return currentTime; }
+    },
+    navigator: { userAgent },
     URL,
     console: { log() {}, warn() {}, error() {} },
     setTimeout,
@@ -114,6 +130,9 @@ function createHarness({
     emitBeforeRequest(details) { listeners.beforeRequest?.(details); },
     emitTabUpdated(tabId, changeInfo) { listeners.tabUpdated?.(tabId, changeInfo); },
     emitTabRemoved(tabId) { listeners.tabRemoved?.(tabId); },
+    emitAlarm(name) { listeners.alarm?.({ name, scheduledTime: alarms.get(name) }); },
+    getAlarms: () => Object.fromEntries(alarms),
+    advanceTime(milliseconds) { currentTime += milliseconds; },
     rejectNextDnrUpdate() { dnrUpdatesBeforeFailure = 1; },
     rejectDnrUpdateIn(callCount) { dnrUpdatesBeforeFailure = callCount; }
   };
@@ -140,31 +159,45 @@ describe('background service worker', () => {
         currentMode: 'strict',
         blockingEnabled: true,
         migrationDone: true,
-        allowedDomains: [],
-        domainRules: {}
+        allowedDomains: ['example.com'],
+        domainRules: {
+          'example.com': { action: 'allow', memo: '', tags: [] }
+        }
       },
       initialRules: [{
         id: 1,
         priority: 1,
         action: { type: 'block' },
-        condition: { resourceTypes: ['script'], domainType: 'thirdParty' }
+        condition: {
+          resourceTypes: ['script'],
+          domainType: 'thirdParty',
+          excludedRequestDomains: ['example.com']
+        }
       }]
     });
 
     await harness.send({ type: 'GET_TAB_DATA', tabId: 2 });
     const strictRule = harness.getRules().find(rule => rule.id === 1);
     expect(strictRule.condition).not.toHaveProperty('domainType');
+    expect(strictRule.condition).not.toHaveProperty('excludedRequestDomains');
     expect(strictRule.condition.resourceTypes).toContain('main_frame');
+    expect(harness.getRules().some(rule =>
+      rule.action.type === 'allow' && rule.condition.requestDomains?.includes('example.com')
+    )).toBe(true);
   });
 
-  it('厳格モードの許可ドメインだけを全体ブロックから除外する', async () => {
+  it('厳格モードの許可ルールを全体ブロックより高い優先度で適用する', async () => {
     const harness = createHarness();
     await harness.send({ type: 'ALLOW_DOMAIN', domain: 'example.com' });
     await harness.send({ type: 'SET_MODE', mode: 'strict' });
 
     const strictRule = harness.getRules().find(rule => rule.id === 1);
-    expect(strictRule.condition.excludedRequestDomains).toEqual(['example.com']);
+    const allowRule = harness.getRules().find(rule =>
+      rule.action.type === 'allow' && rule.condition.requestDomains?.includes('example.com')
+    );
+    expect(strictRule.condition).not.toHaveProperty('excludedRequestDomains');
     expect(strictRule.condition.resourceTypes).toContain('main_frame');
+    expect(allowRule.priority).toBeGreaterThan(strictRule.priority);
   });
 
   it('DNR更新失敗を成功扱いせずUIへ返す', async () => {
@@ -207,8 +240,134 @@ describe('background service worker', () => {
     expect(response.success).toBe(false);
     expect(state.allowed_domains).toContain('example.com');
     expect(state.domain_rules['example.com'].action).toBe('allow');
-    expect(harness.getRules().find(rule => rule.id === 1).condition.excludedRequestDomains)
-      .toEqual(['example.com']);
+    expect(harness.getRules().some(rule =>
+      rule.action.type === 'allow' && rule.condition.requestDomains?.includes('example.com')
+    )).toBe(true);
+  });
+
+  it('より具体的な子ドメインの例外を親ドメインルールより優先する', async () => {
+    const harness = createHarness();
+    await harness.send({ type: 'BLOCK_DOMAIN', domain: 'example.com' });
+    await harness.send({ type: 'ALLOW_DOMAIN', domain: 'api.example.com' });
+
+    const parentBlock = harness.getRules().find(rule =>
+      rule.action.type === 'block' && rule.condition.requestDomains?.includes('example.com')
+    );
+    const childAllow = harness.getRules().find(rule =>
+      rule.action.type === 'allow' && rule.condition.requestDomains?.includes('api.example.com')
+    );
+    expect(childAllow.priority).toBeGreaterThan(parentBlock.priority);
+
+    await harness.send({ type: 'ALLOW_DOMAIN', domain: 'example.org' });
+    await harness.send({ type: 'BLOCK_DOMAIN', domain: 'private.example.org' });
+    const parentAllow = harness.getRules().find(rule =>
+      rule.action.type === 'allow' && rule.condition.requestDomains?.includes('example.org')
+    );
+    const childBlock = harness.getRules().find(rule =>
+      rule.action.type === 'block' && rule.condition.requestDomains?.includes('private.example.org')
+    );
+    expect(childBlock.priority).toBeGreaterThan(parentAllow.priority);
+  });
+
+  it('サイト単位の既定ブロックとファーストパーティ許可を生成する', async () => {
+    const harness = createHarness();
+    const enabled = await harness.send({
+      type: 'ENABLE_SITE_POLICY',
+      siteDomain: 'app.example.com'
+    });
+
+    expect(enabled.site_policy.site_domain).toBe('example.com');
+    expect(enabled.site_policy.enabled).toBe(true);
+    expect(enabled.site_policy.precise_scope).toBe(true);
+    expect(enabled.site_policy.rules['example.com'].action).toBe('allow');
+
+    const siteRules = harness.getRules().filter(rule =>
+      rule.condition.topDomains?.includes('example.com')
+    );
+    expect(siteRules.some(rule =>
+      rule.action.type === 'block' && !rule.condition.requestDomains
+    )).toBe(true);
+    expect(siteRules.some(rule =>
+      rule.action.type === 'allow' && rule.condition.requestDomains?.includes('example.com')
+    )).toBe(true);
+  });
+
+  it('Chrome 145未満では送信元ドメイン条件でサイト範囲を制限する', async () => {
+    const harness = createHarness({ userAgent: 'Mozilla/5.0 Chrome/144.0.0.0' });
+    const enabled = await harness.send({
+      type: 'ENABLE_SITE_POLICY',
+      siteDomain: 'example.com'
+    });
+
+    expect(enabled.site_policy.precise_scope).toBe(false);
+    const siteRules = harness.getRules().filter(rule =>
+      rule.condition.initiatorDomains?.includes('example.com')
+    );
+    expect(siteRules.length).toBeGreaterThanOrEqual(2);
+    expect(siteRules.every(rule => !rule.condition.topDomains)).toBe(true);
+  });
+
+  it('サイト固有ルールがグローバルルールより高い優先度で動作する', async () => {
+    const harness = createHarness();
+    await harness.send({ type: 'BLOCK_DOMAIN', domain: 'cdn.example.net' });
+    await harness.send({ type: 'ENABLE_SITE_POLICY', siteDomain: 'example.com' });
+    await harness.send({
+      type: 'SET_SITE_RULE',
+      siteDomain: 'example.com',
+      domain: 'cdn.example.net',
+      action: 'allow'
+    });
+
+    const globalBlock = harness.getRules().find(rule =>
+      rule.action.type === 'block' &&
+      !rule.condition.topDomains &&
+      rule.condition.requestDomains?.includes('cdn.example.net')
+    );
+    const siteAllow = harness.getRules().find(rule =>
+      rule.action.type === 'allow' &&
+      rule.condition.topDomains?.includes('example.com') &&
+      rule.condition.requestDomains?.includes('cdn.example.net')
+    );
+    expect(siteAllow.priority).toBeGreaterThan(globalBlock.priority);
+  });
+
+  it('サイト保護中は起点ドメインの許可ルールを削除・ブロックできない', async () => {
+    const harness = createHarness();
+    await harness.send({ type: 'ENABLE_SITE_POLICY', siteDomain: 'example.com' });
+
+    const blocked = await harness.send({
+      type: 'SET_SITE_RULE', siteDomain: 'example.com', domain: 'example.com', action: 'block'
+    });
+    const deleted = await harness.send({
+      type: 'DELETE_SITE_RULE', siteDomain: 'example.com', domain: 'example.com'
+    });
+    const state = await harness.send({ type: 'GET_TAB_DATA', tabId: 1 });
+
+    expect(blocked.success).toBe(false);
+    expect(deleted.success).toBe(false);
+    expect(state.site_policy.rules['example.com'].action).toBe('allow');
+  });
+
+  it('5分の一時許可を期限切れ後に自動削除する', async () => {
+    const harness = createHarness();
+    await harness.send({ type: 'ENABLE_SITE_POLICY', siteDomain: 'example.com' });
+    const temporary = await harness.send({
+      type: 'TEMPORARILY_ALLOW_SITE_DOMAIN',
+      siteDomain: 'example.com',
+      domain: 'video.example.net'
+    });
+
+    expect(temporary.site_policy.temporary_allows['video.example.net'])
+      .toBe(1_800_000_300_000);
+    const [alarmName] = Object.keys(harness.getAlarms());
+    expect(alarmName).toContain('temporary-allow:example.com:video.example.net');
+
+    harness.advanceTime(5 * 60 * 1000 + 1);
+    harness.emitAlarm(alarmName);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const state = await harness.send({ type: 'GET_TAB_DATA', tabId: 1 });
+    expect(state.site_policy.temporary_allows).not.toHaveProperty('video.example.net');
+    expect(harness.getAlarms()).not.toHaveProperty(alarmName);
   });
 
   it('一括ブロックの途中で失敗した場合は部分適用を残さない', async () => {
@@ -225,6 +384,25 @@ describe('background service worker', () => {
     expect(state.blocked_domains).toEqual([]);
     expect(state.domain_rules).toEqual({});
     expect(harness.getRules()).toEqual([]);
+  });
+
+  it('表示中ドメインを一括許可ルールへ変換する', async () => {
+    const harness = createHarness();
+    await harness.send({ type: 'BLOCK_DOMAIN', domain: 'example.com' });
+    const response = await harness.send({
+      type: 'BULK_ALLOW',
+      domains: ['api.example.com', 'cdn.example.com']
+    });
+
+    expect(response.allowed_domains.sort()).toEqual(['api.example.com', 'cdn.example.com']);
+    expect(response.domain_rules['api.example.com'].action).toBe('allow');
+    const parentPriority = harness.getRules().find(rule =>
+      rule.action.type === 'block' && rule.condition.requestDomains?.includes('example.com')
+    ).priority;
+    const childPriorities = harness.getRules()
+      .filter(rule => rule.action.type === 'allow')
+      .map(rule => rule.priority);
+    expect(childPriorities.every(priority => priority > parentPriority)).toBe(true);
   });
 
   it('グローバル停止中はルールを保存するがDNRへ適用しない', async () => {
@@ -264,6 +442,22 @@ describe('background service worker', () => {
     const unblocked = await harness.send({ type: 'UNBLOCK_DOMAIN', domain: 'ads.example.com' });
     expect(unblocked.blocked_domains).not.toContain('ads.example.com');
     expect(unblocked.domain_rules).not.toHaveProperty('ads.example.com');
+    expect(harness.getRules()).toEqual([]);
+  });
+
+  it('メモ付きブロックを解除しても保存ルールを残さない', async () => {
+    const harness = createHarness();
+    await harness.send({
+      type: 'ADD_RULE',
+      domain: 'ads.example.com',
+      action: 'block',
+      memo: 'あとで確認',
+      tags: ['review']
+    });
+
+    const unblocked = await harness.send({ type: 'UNBLOCK_DOMAIN', domain: 'ads.example.com' });
+    expect(unblocked.domain_rules).not.toHaveProperty('ads.example.com');
+    expect(harness.getLocalStore().domainRules).not.toHaveProperty('ads.example.com');
     expect(harness.getRules()).toEqual([]);
   });
 
