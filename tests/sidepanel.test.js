@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { JSDOM } from 'jsdom';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(testDir, '..');
 const sidepanelHtml = fs.readFileSync(path.join(projectRoot, 'sidepanel.html'), 'utf8');
 const utilsCode = fs.readFileSync(path.join(projectRoot, 'lib/domain-utils.js'), 'utf8');
-const sidepanelPath = path.join(projectRoot, 'sidepanel.js').replaceAll('\\', '/');
+const sidepanelUrl = pathToFileURL(path.join(projectRoot, 'sidepanel.js')).href;
 const sidepanelCode = fs.readFileSync(path.join(projectRoot, 'sidepanel.js'), 'utf8')
   .replace(/\/\/ 初期化[\s\S]*$/, 'globalThis.DomainTrafficInspector = DomainTrafficInspector;');
 
@@ -18,7 +18,7 @@ function createInspector() {
     url: 'https://extension.test/sidepanel.html'
   });
   dom.window.eval(utilsCode);
-  dom.window.eval(`${sidepanelCode}\n//# sourceURL=file:///${sidepanelPath}`);
+  dom.window.eval(`${sidepanelCode}\n//# sourceURL=${sidepanelUrl}`);
 
   const inspector = Object.create(dom.window.DomainTrafficInspector.prototype);
   inspector.domainData = {
