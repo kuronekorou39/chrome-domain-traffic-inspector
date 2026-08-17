@@ -20,11 +20,11 @@
     "node": ">=22.13.0"
   },
   "devDependencies": {
-    "@emnapi/core": "^2.0.0-alpha.3",
-    "@emnapi/runtime": "^2.0.0-alpha.3",
+    "@emnapi/core": "^2.0.0-alpha.4",
+    "@emnapi/runtime": "^2.0.0-alpha.4",
     "@vitest/coverage-v8": "^4.1.10",
-    "eslint": "^10.8.0",
-    "jsdom": "^29.1.1",
+    "eslint": "^10.8.1",
+    "jsdom": "^30.0.1",
     "vitest": "^4.1.10"
   }
 }
