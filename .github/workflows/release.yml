@@ -74,13 +74,14 @@ jobs:
             SMOKE_TEST.md \
             LICENSE \
             lib/ \
-            icons/
+            icons/ \
+            docs/
 
       - name: Verify package
         run: |
           ARCHIVE="domain-traffic-inspector-v${{ steps.version.outputs.version }}.zip"
           unzip -t "$ARCHIVE"
-          for file in manifest.json background.js sidepanel.html sidepanel.css sidepanel.js README.md PRIVACY.md SECURITY.md CHANGELOG.md CONTRIBUTING.md CODE_OF_CONDUCT.md SMOKE_TEST.md LICENSE; do
+          for file in manifest.json background.js sidepanel.html sidepanel.css sidepanel.js README.md PRIVACY.md SECURITY.md CHANGELOG.md CONTRIBUTING.md CODE_OF_CONDUCT.md SMOKE_TEST.md LICENSE docs/USAGE.md; do
             unzip -Z1 "$ARCHIVE" | grep -Fx "$file"
           done
 
