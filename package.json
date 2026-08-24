@@ -22,7 +22,7 @@
   "devDependencies": {
     "@emnapi/core": "^2.0.0-alpha.4",
     "@emnapi/runtime": "^2.0.0-alpha.4",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^10.8.1",
     "jsdom": "^30.0.1",
     "vitest": "^4.1.10"
